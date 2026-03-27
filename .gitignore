@@ -1,0 +1,34 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+.browser_state/
+
+# ── Runtime / IPC (cleared on every launch) ───────────────────────────────────
+.queue/*.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Debug screenshots from behance_publisher ─────────────────────────────────
+error_*.png
+
+# ── Runtime logs (may contain API errors and debug info) ─────────────────────
+logs/
+
+# ── User content (not committed) ─────────────────────────────────────────────
+input_instagram/*
+input_behance/*
+!input_instagram/.gitkeep
+!input_behance/.gitkeep

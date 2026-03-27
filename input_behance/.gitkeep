@@ -1,0 +1,3 @@
+# Drop Behance project folders here.
+# Each sub-folder should contain 1–10 images.
+# The watchdog will detect the new folder and route it to the Behance UI.

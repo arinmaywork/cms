@@ -1,0 +1,31 @@
+# ── Core UI ───────────────────────────────────────────────────────────────────
+streamlit>=1.35.0,<2.0.0
+streamlit-autorefresh>=1.0.1
+
+# ── Terminal colours in launcher ──────────────────────────────────────────────
+colorama>=0.4.6
+
+# ── File system watcher ───────────────────────────────────────────────────────
+watchdog>=4.0.0
+
+# ── AI — Google Gemini (replaces Anthropic) ───────────────────────────────────
+# Free tier: https://aistudio.google.com/apikey
+# Cascade: gemini-2.0-flash → gemini-1.5-flash → gemini-2.5-flash-lite → gemini-2.5-flash
+google-genai>=1.0.0
+
+# ── Instagram Graph API ───────────────────────────────────────────────────────
+requests>=2.32.0
+
+# ── Behance automation ────────────────────────────────────────────────────────
+playwright>=1.44.0
+beautifulsoup4>=4.12.0
+
+# ── Image handling ────────────────────────────────────────────────────────────
+Pillow>=10.3.0
+
+# ── Environment management ────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── macOS native dialog control (for Behance file picker) ────────────────────
+pyautogui>=0.9.54
+cloudinary>=1.36.0
