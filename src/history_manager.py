@@ -17,11 +17,13 @@ HISTORY_DIR = BASE_DIR / "history"
 _FILES: dict[str, Path] = {
     "instagram": HISTORY_DIR / "history_instagram.json",
     "behance":   HISTORY_DIR / "history_behance.json",
+    "youtube":   HISTORY_DIR / "history_youtube.json",
 }
 
 _locks: dict[str, threading.Lock] = {
     "instagram": threading.Lock(),
     "behance":   threading.Lock(),
+    "youtube":   threading.Lock(),
 }
 
 

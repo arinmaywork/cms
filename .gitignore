@@ -3,7 +3,7 @@
 .browser_state/
 
 # ── Runtime / IPC (cleared on every launch) ───────────────────────────────────
-.queue/*.json
+.queue/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 .venv/
@@ -27,8 +27,16 @@ error_*.png
 # ── Runtime logs (may contain API errors and debug info) ─────────────────────
 logs/
 
+# ── Publish history (personal content — transfer via scp, not git) ───────────
+history/*.json
+
 # ── User content (not committed) ─────────────────────────────────────────────
 input_instagram/*
 input_behance/*
+input_youtube/*
 !input_instagram/.gitkeep
 !input_behance/.gitkeep
+!input_youtube/.gitkeep
+
+# YouTube OAuth secrets
+.secrets/

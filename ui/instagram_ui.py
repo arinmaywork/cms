@@ -110,36 +110,36 @@ def _run_automation(images: list[pathlib.Path], project_name: str, notes: str) -
 
     try:
         # ── Step 0: upload ────────────────────────────────────────────────────
-        progress.update(step, "active", "Uploading to Cloudinary…")
+        progress.update("ig_automation", step, "active", "Uploading to Cloudinary…")
         uploaded = upload_multiple(images)
         for i, u in enumerate(uploaded):
             urls[images[i].name] = u
-        progress.update(step, "done", f"{len(uploaded)} image(s) uploaded")
+        progress.update("ig_automation", step, "done", f"{len(uploaded)} image(s) uploaded")
         step += 1
 
         # ── Step 1: title / hook ──────────────────────────────────────────────
-        progress.update(step, "active", "Calling Gemini…")
+        progress.update("ig_automation", step, "active", "Calling Gemini…")
         title = generate_title_text("instagram", project_name, notes)
-        progress.update(step, "done", "Done")
+        progress.update("ig_automation", step, "done", "Done")
         step += 1
 
         # ── Step 2: footer / hashtags ─────────────────────────────────────────
-        progress.update(step, "active", "Calling Gemini…")
+        progress.update("ig_automation", step, "active", "Calling Gemini…")
         footer = generate_footer_text("instagram", project_name, notes)
-        progress.update(step, "done", "Done")
+        progress.update("ig_automation", step, "done", "Done")
         step += 1
 
         # ── Steps 3+: per-image captions & alt text ───────────────────────────
         for i, img in enumerate(images):
-            progress.update(step, "active", f"Analysing {img.name}…")
+            progress.update("ig_automation", step, "active", f"Analysing {img.name}…")
             image_texts[img.name] = generate_image_text(
                 "instagram", project_name, img, i, len(images), notes
             )
             alt_texts[img.name] = generate_alt_text(img)
-            progress.update(step, "done", "Done")
+            progress.update("ig_automation", step, "done", "Done")
             step += 1
 
-        progress.finish({
+        progress.finish("ig_automation", {
             "success":     True,
             "urls":        urls,
             "title":       title,
@@ -149,7 +149,7 @@ def _run_automation(images: list[pathlib.Path], project_name: str, notes: str) -
         })
 
     except Exception:
-        progress.fail(traceback.format_exc())
+        progress.fail("ig_automation", traceback.format_exc())
 
 
 # ── Main UI ────────────────────────────────────────────────────────────────────

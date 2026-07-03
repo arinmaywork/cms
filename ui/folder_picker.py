@@ -17,8 +17,20 @@ BASE_DIR        = Path(__file__).resolve().parent.parent
 INPUT_DIRS = {
     "instagram": BASE_DIR / "input_instagram",
     "behance":   BASE_DIR / "input_behance",
+    "youtube":   BASE_DIR / "input_youtube",
 }
-VALID_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm",
+              ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
+PLATFORM_EXTS = {
+    "instagram": IMAGE_EXTS,
+    "behance":   IMAGE_EXTS,
+    "youtube":   VIDEO_EXTS,
+}
+
+
+def _valid_exts(platform: str) -> set:
+    return PLATFORM_EXTS.get(platform, IMAGE_EXTS)
 
 
 def _count_projects(platform: str) -> list[Path]:
@@ -34,7 +46,8 @@ def _count_projects(platform: str) -> list[Path]:
         if not p.is_dir() or p.name.startswith("."):
             continue
         try:
-            has_images = any(f.suffix.lower() in VALID_EXTS for f in p.iterdir())
+            has_images = any(f.suffix.lower() in _valid_exts(platform)
+                             for f in p.iterdir())
         except OSError:
             continue  # skip unreadable subdirectory
         if has_images:
@@ -108,16 +121,17 @@ def render_folder_picker(platform: str) -> None:
     if manual:
         p = Path(manual.strip().strip("'\""))   # strip shell quotes
         if p.is_dir():
-            imgs = [f for f in p.iterdir() if f.suffix.lower() in VALID_EXTS]
-            if imgs:
+            files = [f for f in p.iterdir() if f.suffix.lower() in _valid_exts(platform)]
+            if files:
                 if st.button(
-                    f"✅ Load  `{p.name}`  ({len(imgs)} image(s))",
+                    f"✅ Load  `{p.name}`  ({len(files)} file(s))",
                     key=f"manual_load_{platform}",
                     width="stretch",
                 ):
                     fq_push(platform, p)
                     st.rerun()
             else:
-                st.warning(f"No images found in `{p.name}` — add .jpg / .png files first.")
+                kind = ".mp4 / .mov video" if platform == "youtube" else ".jpg / .png image"
+                st.warning(f"No matching files found in `{p.name}` — add {kind} files first.")
         else:
             st.warning("Path not found or not a folder.")

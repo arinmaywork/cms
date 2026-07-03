@@ -27,7 +27,7 @@ from pathlib import Path
 BASE_DIR   = Path(__file__).resolve().parent.parent
 QUEUE_DIR  = BASE_DIR / ".queue"
 
-_PLATFORMS = ("instagram", "behance")
+_PLATFORMS = ("instagram", "behance", "youtube")
 
 # One threading.Lock per platform guards in-process concurrent access;
 # the file-lock guards cross-process access.

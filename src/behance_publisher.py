@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 import src.progress as progress
 from src.ai_generator import generate_behance_metadata
 
+NS         = "behance"   # progress namespace
 BASE_URL   = "https://www.behance.net"
 STATE_DIR  = Path(__file__).resolve().parent.parent / ".browser_state"
 STATE_FILE = STATE_DIR / "behance_state.json"
@@ -76,7 +77,7 @@ async def _click_add_content(page: Page, label: str) -> None:
 
 
 async def _upload_image(page: Page, img_path: Path, step: int) -> None:
-    progress.update(step, "active", f"Uploading {img_path.name}…")
+    progress.update(NS, step, "active", f"Uploading {img_path.name}…")
     await _deselect(page)
     full_path = str(img_path.resolve())
 
@@ -86,7 +87,7 @@ async def _upload_image(page: Page, img_path: Path, step: int) -> None:
         fc = await fc_info.value
         await fc.set_files(full_path)
         await page.wait_for_timeout(5000)
-        progress.update(step, "done", f"{img_path.name} ✓")
+        progress.update(NS, step, "done", f"{img_path.name} ✓")
         return
     except Exception: pass
 
@@ -97,14 +98,14 @@ async def _upload_image(page: Page, img_path: Path, step: int) -> None:
         if inputs:
             await inputs[-1].set_input_files(full_path)
             await page.wait_for_timeout(5000)
-            progress.update(step, "done", f"{img_path.name} ✓")
+            progress.update(NS, step, "done", f"{img_path.name} ✓")
             return
         await page.wait_for_timeout(500)
-    progress.update(step, "error", f"Upload failed: {img_path.name}")
+    progress.update(NS, step, "error", f"Upload failed: {img_path.name}")
 
 
 async def _add_padding(page: Page, step: int) -> None:
-    progress.update(step, "active", "Adding padding…")
+    progress.update(NS, step, "active", "Adding padding…")
     await page.wait_for_timeout(800)
     for sel in ["figure img", ".image-block img", "img"]:
         imgs = await page.query_selector_all(sel)
@@ -121,7 +122,7 @@ async def _add_padding(page: Page, step: int) -> None:
             if (b) { b.click(); return true; } return false;
         }
     """)
-    progress.update(step, "done", "Padding ✓" if found else "Padding not found")
+    progress.update(NS, step, "done", "Padding ✓" if found else "Padding not found")
 
 
 async def _count_editors(page: Page) -> int:
@@ -130,10 +131,10 @@ async def _count_editors(page: Page) -> int:
 
 async def _add_text_block(page: Page, text: str, step: int, label: str) -> None:
     if not text.strip():
-        progress.update(step, "done", f"{label} — no text, skipped")
+        progress.update(NS, step, "done", f"{label} — no text, skipped")
         return
 
-    progress.update(step, "active", f"Adding {label}…")
+    progress.update(NS, step, "active", f"Adding {label}…")
     before = await _count_editors(page)
 
     await _click_add_content(page, "Text")
@@ -145,7 +146,7 @@ async def _add_text_block(page: Page, text: str, step: int, label: str) -> None:
 
     all_eds = await page.query_selector_all('[contenteditable="true"]')
     if not all_eds:
-        progress.update(step, "error", f"{label} — editor not found")
+        progress.update(NS, step, "error", f"{label} — editor not found")
         return
 
     editor = all_eds[-1]  # LAST = newest
@@ -154,7 +155,7 @@ async def _add_text_block(page: Page, text: str, step: int, label: str) -> None:
     await page.wait_for_timeout(300)
     for chunk in [text[i:i+300] for i in range(0, len(text), 300)]:
         await page.keyboard.type(chunk, delay=6)
-    progress.update(step, "done", f"{label} ✓ ({len(text)} chars)")
+    progress.update(NS, step, "done", f"{label} ✓ ({len(text)} chars)")
 
 
 def _parse_content(html: str, image_paths: list[Path]) -> dict:
@@ -196,7 +197,7 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
     """
     import os as _os
 
-    progress.update(step, "active", "Waiting for metadata modal…")
+    progress.update(NS, step, "active", "Waiting for metadata modal…")
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Wait until the Title input is visible — confirms modal is open
@@ -205,7 +206,7 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
             'input[placeholder*="Give your project" i]', timeout=10_000)
     except PWTimeout:
         await page.screenshot(path=str(STATE_DIR / "modal_wait_failed.png"))
-        progress.update(step, "error", "Modal did not open — check modal_wait_failed.png")
+        progress.update(NS, step, "error", "Modal did not open — check modal_wait_failed.png")
         return
 
     await page.wait_for_timeout(1000)
@@ -223,9 +224,9 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
         await page.wait_for_timeout(200)
         await title_inp.fill(ai_title)
         await page.wait_for_timeout(500)
-        progress.update(step, "active", f"Title: {ai_title[:50]}")
+        progress.update(NS, step, "active", f"Title: {ai_title[:50]}")
     except Exception as e:
-        progress.update(step, "active", f"Title failed: {e}")
+        progress.update(NS, step, "active", f"Title failed: {e}")
 
     # ── Tags (before category so dropdown is closed before we need category) ──
     tags_to_add = (ai_tags[:10] if ai_tags else
@@ -243,9 +244,9 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
             await page.keyboard.press("Enter")
             await page.wait_for_timeout(400)
             tags_filled += 1
-        progress.update(step, "active", f"Tags: {tags_filled}")
+        progress.update(NS, step, "active", f"Tags: {tags_filled}")
     except Exception as e:
-        progress.update(step, "active", f"Tags failed: {e}")
+        progress.update(NS, step, "active", f"Tags failed: {e}")
 
     # Close tags dropdown: Tab out of tags field to move focus forward
     await page.keyboard.press("Tab")
@@ -383,7 +384,7 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
                     break
 
         await page.screenshot(path=str(STATE_DIR / "category_modal.png"), full_page=False)
-        progress.update(step, "active", f"Category modal opened: {cat_opened}")
+        progress.update(NS, step, "active", f"Category modal opened: {cat_opened}")
 
         # ── Type in the Search input to filter the list ───────────────────────
         search_inp = await page.wait_for_selector(
@@ -455,10 +456,10 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
             except Exception:
                 pass
 
-        progress.update(step, "active",
+        progress.update(NS, step, "active",
             f"Category: {'✓' if cat_filled else '✗'} checked={checked} opened={cat_opened}")
     except Exception as e:
-        progress.update(step, "active", f"Category failed: {e}")
+        progress.update(NS, step, "active", f"Category failed: {e}")
 
     # ── Tools Used ────────────────────────────────────────────────────────────
     # Chip/tag input — same pattern as Tags. Each tool entered + Enter key.
@@ -479,9 +480,9 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
                 await page.wait_for_timeout(300)
                 await page.keyboard.press("Enter")
                 await page.wait_for_timeout(400)
-            progress.update(step, "active", f"Tools: {', '.join(tools_list)}")
+            progress.update(NS, step, "active", f"Tools: {', '.join(tools_list)}")
         except Exception as e:
-            progress.update(step, "active", f"Tools failed: {e}")
+            progress.update(NS, step, "active", f"Tools failed: {e}")
 
     # ── Description ──────────────────────────────────────────────────────────
     if ai_desc:
@@ -494,10 +495,10 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
         except Exception: pass
 
     await page.screenshot(path=str(STATE_DIR / "metadata_filled.png"), full_page=False)
-    progress.update(step, "active", f"All fields filled — clicking Publish…")
+    progress.update(NS, step, "active", f"All fields filled — clicking Publish…")
 
     await page.wait_for_timeout(500)
-    progress.update(step, "active", f"Filled: '{ai_title}' — clicking Publish…")
+    progress.update(NS, step, "active", f"Filled: '{ai_title}' — clicking Publish…")
     await page.wait_for_timeout(500)
 
     # ── Find the exact Publish button by iterating all buttons ────────────────
@@ -515,12 +516,12 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
         await publish_btn.scroll_into_view_if_needed()
         await publish_btn.click()
         clicked = True
-        progress.update(step, "active", "Publish button clicked ✓")
+        progress.update(NS, step, "active", "Publish button clicked ✓")
     else:
         # Coordinate fallback: green Publish button at bottom-right of modal
         await page.mouse.click(1113, 741)
         clicked = True
-        progress.update(step, "active", "Publish clicked via coordinates")
+        progress.update(NS, step, "active", "Publish clicked via coordinates")
 
     await page.wait_for_timeout(4000)
     await page.screenshot(path=str(STATE_DIR / "after_publish.png"))
@@ -529,7 +530,7 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
     pro_text = await page.evaluate(
         "() => document.body.innerText.includes('Upgrade your experience')")
     if pro_text:
-        progress.update(step, "active", "PRO modal appeared — dismissing…")
+        progress.update(NS, step, "active", "PRO modal appeared — dismissing…")
         await _dismiss_pro_modal(page)
         await page.wait_for_timeout(1000)
         # Re-click Publish
@@ -542,7 +543,7 @@ async def _fill_metadata_page(page: Page, metadata: dict, project_name: str,
                 break
 
     await page.screenshot(path=str(STATE_DIR / "after_publish.png"))
-    progress.update(step, "done", f"Done — {page.url}")
+    progress.update(NS, step, "done", f"Done — {page.url}")
 
 
 async def _dismiss_pro_modal(page: Page) -> bool:
@@ -611,12 +612,12 @@ async def _click_publish_btn(page: Page) -> bool:
 
 
 async def _publish(page: Page, step: int) -> str:
-    progress.update(step, "active", "Clicking Publish…")
+    progress.update(NS, step, "active", "Clicking Publish…")
 
     # First attempt: click Publish
     clicked = await _click_publish_btn(page)
     if not clicked:
-        progress.update(step, "error", "Publish button not found on first attempt")
+        progress.update(NS, step, "error", "Publish button not found on first attempt")
         await page.screenshot(path=str(STATE_DIR / "publish_failed.png"))
         return page.url
 
@@ -625,7 +626,7 @@ async def _publish(page: Page, step: int) -> str:
     # Check if PRO upsell modal appeared (common after clicking Publish)
     dismissed = await _dismiss_pro_modal(page)
     if dismissed:
-        progress.update(step, "active", "PRO modal dismissed — clicking Publish again…")
+        progress.update(NS, step, "active", "PRO modal dismissed — clicking Publish again…")
         await page.wait_for_timeout(500)
         # Click Publish again now that modal is gone
         await _click_publish_btn(page)
@@ -642,7 +643,7 @@ async def _publish(page: Page, step: int) -> str:
 
     await page.wait_for_load_state("networkidle", timeout=20_000)
     await page.screenshot(path=str(STATE_DIR / "after_publish.png"))
-    progress.update(step, "done", f"Published → {page.url}")
+    progress.update(NS, step, "done", f"Published → {page.url}")
     return page.url
 
 
@@ -668,7 +669,7 @@ async def _run(project_name: str, html_content: str,
                image_paths: list[Path]) -> dict[str, Any]:
     n      = len(image_paths)
     labels = _step_labels(n)
-    progress.start("behance", labels)
+    progress.start(NS, labels)
     content  = _parse_content(html_content, image_paths)
     storage  = str(STATE_FILE) if STATE_FILE.exists() else None
 
@@ -680,30 +681,30 @@ async def _run(project_name: str, html_content: str,
         browser, ctx, page = await _launch(pw, storage)
         try:
             # ── 0: Generate metadata ─────────────────────────────────────────
-            progress.update(cur(), "active", "Analysing images with Gemini Vision…")
+            progress.update(NS, cur(), "active", "Analysing images with Gemini Vision…")
             try:
                 metadata = generate_behance_metadata(project_name, image_paths)
-                progress.update(cur(), "done",
+                progress.update(NS, cur(), "done",
                     f"'{metadata['title']}' | cover: img {metadata['cover_index']+1}")
             except Exception as e:
                 metadata = {"title": project_name, "description": "", "tags": [], "cover_index": 0}
-                progress.update(cur(), "done", f"Metadata fallback (error: {e})")
+                progress.update(NS, cur(), "done", f"Metadata fallback (error: {e})")
             nxt()
 
             # ── 1: Open editor ───────────────────────────────────────────────
-            progress.update(cur(), "active", "Opening editor…")
+            progress.update(NS, cur(), "active", "Opening editor…")
             await page.goto(EDITOR_URL, wait_until="domcontentloaded")
             await page.wait_for_timeout(4000)
 
             if not await _is_logged_in(page):
-                progress.update(cur(), "error", "Login expired!")
+                progress.update(NS, cur(), "error", "Login expired!")
                 raise RuntimeError(
                     "Behance session expired or missing. Please click 'Behance Login' "
                     "in the sidebar to refresh your credentials."
                 )
 
             await _dismiss(page)
-            progress.update(cur(), "done", "Editor ready ✓"); nxt()
+            progress.update(NS, cur(), "done", "Editor ready ✓"); nxt()
 
             # ── 2: Header ────────────────────────────────────────────────────
             await _add_text_block(page, content["header"], cur(), "Header"); nxt()
@@ -719,19 +720,19 @@ async def _run(project_name: str, html_content: str,
             await _add_text_block(page, content["footer"], cur(), "Footer"); nxt()
 
             # ── N+4: Continue → fill metadata ────────────────────────────────
-            progress.update(cur(), "active", "Clicking Continue…")
+            progress.update(NS, cur(), "active", "Clicking Continue…")
             try:
                 btn = await page.wait_for_selector('button:has-text("Continue")', timeout=8_000)
                 await btn.click()
                 await page.wait_for_load_state("domcontentloaded", timeout=15_000)
                 await page.wait_for_timeout(3000)
             except PWTimeout:
-                progress.update(cur(), "active", "Continue not found — trying Publish directly")
+                progress.update(NS, cur(), "active", "Continue not found — trying Publish directly")
 
             await _fill_metadata_page(page, metadata, project_name, image_paths, cur()); nxt()
 
             result = {"success": True, "url": page.url}
-            progress.finish(result)
+            progress.finish(NS, result)
             return result
 
         except Exception as exc:
@@ -739,10 +740,10 @@ async def _run(project_name: str, html_content: str,
             try: await page.screenshot(path=str(shot), full_page=True)
             except Exception: pass
             err = str(exc)
-            for idx, s in enumerate(progress.read().get("steps", [])):
+            for idx, s in enumerate(progress.read(NS).get("steps", [])):
                 if s["status"] in ("active", "pending"):
-                    progress.update(idx, "error", err[:80])
-            progress.fail(err)
+                    progress.update(NS, idx, "error", err[:80])
+            progress.fail(NS, err)
             return {"success": False, "error": err, "screenshot": str(shot)}
         finally:
             await browser.close()

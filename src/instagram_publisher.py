@@ -16,6 +16,7 @@ from typing import Any
 
 import src.progress as progress
 
+NS            = "ig"   # progress namespace (matches ui/instagram_ui.py)
 GRAPH_BASE    = "https://graph.instagram.com/v25.0"
 POLL_INTERVAL = 3    # seconds between status-check polls
 POLL_TIMEOUT  = 120  # seconds before giving up on a container
@@ -96,7 +97,7 @@ def _poll_until_ready(
         if status == "ERROR":
             raise RuntimeError(f"Instagram rejected container {container_id}.")
         elapsed = int(time.time() - start_time)
-        progress.update(step_index, "active", f"{step_label} — processing… ({elapsed}s)")
+        progress.update(NS, step_index, "active", f"{step_label} — processing… ({elapsed}s)")
         time.sleep(POLL_INTERVAL)
     raise TimeoutError(f"Container {container_id} did not finish within {POLL_TIMEOUT}s.")
 
@@ -175,7 +176,7 @@ def publish_to_instagram(
     else:
         step_labels = ["Upload image", "Process image", "Publish"]
 
-    progress.start("instagram", step_labels)
+    progress.start(NS, step_labels)
 
     try:
         c            = _creds()
@@ -185,68 +186,68 @@ def publish_to_instagram(
         # ── Single image ──────────────────────────────────────────────────────
         if not is_carousel:
             # Step 0 — upload
-            progress.update(0, "active", "Sending image to Instagram…")
+            progress.update(NS, 0, "active", "Sending image to Instagram…")
             container_id = _create_image_container(
                 ig_user_id, access_token, image_urls[0],
                 caption=caption,
                 alt_text=alt_texts[0] if alt_texts else None
             )
-            progress.update(0, "done", f"Container ID: {container_id[:12]}…")
+            progress.update(NS, 0, "done", f"Container ID: {container_id[:12]}…")
 
             # Step 1 — process
-            progress.update(1, "active", "Waiting for Instagram to process…")
+            progress.update(NS, 1, "active", "Waiting for Instagram to process…")
             _poll_until_ready(container_id, access_token, 1, "Processing")
-            progress.update(1, "done", "Ready to publish")
+            progress.update(NS, 1, "done", "Ready to publish")
 
             # Step 2 — publish
-            progress.update(2, "active", "Publishing…")
+            progress.update(NS, 2, "active", "Publishing…")
             post_id = _publish_container(ig_user_id, access_token, container_id)
-            progress.update(2, "done", f"Post ID: {post_id}")
+            progress.update(NS, 2, "done", f"Post ID: {post_id}")
 
             result = {"success": True, "post_id": post_id, "type": "single"}
-            progress.finish(result)
+            progress.finish(NS, result)
             return result
 
         # ── Carousel ──────────────────────────────────────────────────────────
         child_ids: list[str] = []
         for i, url in enumerate(image_urls):
             step_i = i
-            progress.update(step_i, "active", f"Sending to Instagram API…")
+            progress.update(NS, step_i, "active", f"Sending to Instagram API…")
             alt = alt_texts[i] if (alt_texts and i < len(alt_texts)) else None
             cid = _create_image_container(
                 ig_user_id, access_token, url,
                 alt_text=alt,
                 is_carousel_item=True
             )
-            progress.update(step_i, "active", f"Processing container {cid[:10]}…")
+            progress.update(NS, step_i, "active", f"Processing container {cid[:10]}…")
             _poll_until_ready(cid, access_token, step_i, f"Image {i+1}")
-            progress.update(step_i, "done", f"Ready ✓  ({cid[:10]}…)")
+            progress.update(NS, step_i, "done", f"Ready ✓  ({cid[:10]}…)")
             child_ids.append(cid)
 
         # Carousel container step
         carousel_step = n
-        progress.update(carousel_step, "active", "Assembling carousel…")
+        progress.update(NS, carousel_step, "active", "Assembling carousel…")
         carousel_id = _create_carousel_container(
             ig_user_id, access_token, child_ids, caption
         )
         _poll_until_ready(carousel_id, access_token, carousel_step, "Carousel container")
-        progress.update(carousel_step, "done", f"Container ready ({carousel_id[:10]}…)")
+        progress.update(NS, carousel_step, "done", f"Container ready ({carousel_id[:10]}…)")
 
         # Publish step
         pub_step = n + 1
-        progress.update(pub_step, "active", "Publishing carousel to Instagram…")
+        progress.update(NS, pub_step, "active", "Publishing carousel to Instagram…")
         post_id = _publish_container(ig_user_id, access_token, carousel_id)
-        progress.update(pub_step, "done", f"Post ID: {post_id}")
+        progress.update(NS, pub_step, "done", f"Post ID: {post_id}")
 
         result = {"success": True, "post_id": post_id, "type": "carousel", "items": n}
-        progress.finish(result)
+        progress.finish(NS, result)
         return result
 
     except Exception as exc:
         # Mark every still-active or pending step as error
-        state = progress.read()
+        state = progress.read(NS)
         for idx, step in enumerate(state.get("steps", [])):
             if step["status"] in ("active", "pending"):
-                progress.update(idx, "error", str(exc)[:120])
-        progress.fail(str(exc))
+                progress.update(NS, idx, "error", str(exc)[:120])
+        progress.fail(NS, str(exc))
         return {"success": False, "error": str(exc)}

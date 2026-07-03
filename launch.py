@@ -79,9 +79,11 @@ def magenta(t: str) -> str: return _c(t, Fore.MAGENTA)
 REQUIRED_DIRS = [
     ROOT / "input_instagram",
     ROOT / "input_behance",
+    ROOT / "input_youtube",
     ROOT / "history",
     ROOT / ".queue",
     ROOT / ".browser_state",
+    ROOT / ".secrets",
 ]
 
 
@@ -100,6 +102,20 @@ def _preflight() -> list[str]:
             warnings.append("INSTAGRAM_ACCESS_TOKEN is not set (Instagram publishing will fail)")
         if not os.getenv("BEHANCE_EMAIL"):
             warnings.append("BEHANCE_EMAIL is not set (Behance publishing will fail)")
+        if not os.getenv("APP_PASSWORD"):
+            warnings.append("APP_PASSWORD is not set — anyone who can reach the port can use the app "
+                            "(fine locally; set it before exposing on a VM)")
+
+    yt_secret = ROOT / ".secrets" / "youtube_client_secret.json"
+    if not (yt_secret.exists() or os.getenv("YOUTUBE_CLIENT_SECRET_FILE")):
+        warnings.append("YouTube client secret not found — see YOUTUBE_SETUP.md "
+                        "(YouTube publishing disabled until then)")
+
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        warnings.append("ffmpeg not found — YouTube AI will work from filename only "
+                        "and frame/thumbnail extraction is disabled "
+                        "(install: brew install ffmpeg / apt install ffmpeg)")
 
     return warnings
 
@@ -116,7 +132,7 @@ def _on_detected(platform: str, folder: Path, image_count: int) -> None:
     if len(_event_log) > _MAX_LOG:
         _event_log.pop(0)
     # Print inline (will be visible between dashboard redraws)
-    icon = "📸" if platform == "instagram" else "🎨"
+    icon = {"instagram": "📸", "behance": "🎨", "youtube": "▶️"}.get(platform, "📁")
     print(
         f"\n  {icon}  {cyan(ts)}  "
         f"{bold(folder.name)}  [{platform}]  "
@@ -147,29 +163,31 @@ def _render_dashboard(url: str, observer_alive: bool) -> None:
     print()
 
     # Watched folders
-    ig_path = ROOT / "input_instagram"
-    bh_path = ROOT / "input_behance"
     print(f"  {bold('Watching:')}")
-    print(f"    📸  {cyan(str(ig_path))}")
-    print(f"    🎨  {cyan(str(bh_path))}")
+    print(f"    📸  {cyan(str(ROOT / 'input_instagram'))}")
+    print(f"    🎨  {cyan(str(ROOT / 'input_behance'))}")
+    print(f"    ▶️  {cyan(str(ROOT / 'input_youtube'))}")
     print()
 
     # Pending queue lengths
     ig_q = fq_peek("instagram")
     bh_q = fq_peek("behance")
-    if ig_q or bh_q:
+    yt_q = fq_peek("youtube")
+    if ig_q or bh_q or yt_q:
         print(f"  {bold('Pending (not yet opened in UI):')}")
         if ig_q:
             print(f"    📸  Instagram: {yellow(str(len(ig_q)))} project(s)")
         if bh_q:
             print(f"    🎨  Behance:   {yellow(str(len(bh_q)))} project(s)")
+        if yt_q:
+            print(f"    ▶️  YouTube:   {yellow(str(len(yt_q)))} project(s)")
         print()
 
     # Recent events
     if _event_log:
         print(f"  {bold('Recent detections:')}")
         for ts, platform, name, count in reversed(_event_log[-8:]):
-            icon = "📸" if platform == "instagram" else "🎨"
+            icon = {"instagram": "📸", "behance": "🎨", "youtube": "▶️"}.get(platform, "📁")
             print(f"    {icon}  {cyan(ts)}  {bold(name)}  "
                   f"[{platform}]  {yellow(str(count))} image(s)")
         print()
@@ -259,7 +277,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Local Social Media CMS launcher")
     parser.add_argument("--port",       type=int, default=8501, help="Streamlit port (default: 8501)")
     parser.add_argument("--no-browser", action="store_true",    help="Don't open browser automatically")
+    parser.add_argument("--headless",   action="store_true",
+                        help="Server mode (VM/systemd): no browser, no live terminal dashboard")
     args = parser.parse_args()
+
+    # Auto-detect non-interactive environments (systemd, nohup, docker)
+    headless = args.headless or not sys.stdout.isatty()
+    if headless:
+        args.no_browser = True
 
     url = f"http://localhost:{args.port}"
 
@@ -359,8 +384,11 @@ def main() -> None:
                 streamlit_proc, streamlit_log_fh = _launch_streamlit(args.port)
                 time.sleep(2)
 
-            _render_dashboard(url, observer.is_alive())
-            time.sleep(3)
+            if headless:
+                time.sleep(10)   # no screen-clearing dashboard in server mode
+            else:
+                _render_dashboard(url, observer.is_alive())
+                time.sleep(3)
 
     except KeyboardInterrupt:
         _shutdown()

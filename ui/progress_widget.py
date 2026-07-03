@@ -19,9 +19,9 @@ _ICON  = {"pending": "⬜", "active": "🔄", "done": "✅", "error": "❌"}
 _COLOR = {"pending": "#666", "active": "#4da6ff", "done": "#2ecc71", "error": "#e74c3c"}
 
 
-def _draw(placeholder: Any) -> None:
-    """Repaint steps inside *placeholder* from the current progress file."""
-    state = progress.read()
+def _draw(platform: str, placeholder: Any) -> None:
+    """Repaint steps inside *placeholder* from the platform's progress file."""
+    state = progress.read(platform)
     steps = state.get("steps", [])
     if not steps:
         placeholder.info("⏳ Initialising publisher…")
@@ -85,9 +85,9 @@ def start_publish_thread(fn: Callable, platform: str) -> None:
     written a sentinel "Launching..." step so the UI guard works correctly.
     """
     # Only clear if there are stale completed steps from a previous run
-    state = progress.read()
+    state = progress.read(platform)
     if not state.get("active", False):
-        progress.clear()
+        progress.clear(platform)
     key = f"{platform}_publishing"
     st.session_state[key] = True
 
@@ -100,7 +100,7 @@ def start_publish_thread(fn: Callable, platform: str) -> None:
         try:
             fn()
         except Exception as exc:
-            progress.fail(str(exc))
+            progress.fail(platform, str(exc))
         finally:
             # Remove flag when done
             try: _flag.unlink(missing_ok=True)
@@ -116,8 +116,8 @@ def render_progress(platform: str, placeholder: Any) -> dict | None:
     Draws the step list into *placeholder*.
     Returns the result dict when publishing finishes, None while still running.
     """
-    state = progress.read()
-    _draw(placeholder)
+    state = progress.read(platform)
+    _draw(platform, placeholder)
 
     if state.get("active", False):
         return None  # still running

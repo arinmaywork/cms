@@ -1,53 +1,51 @@
 # 📱 Local Social Media CMS
 
-A local-first content management system that automates publishing photography projects to **Instagram** and **Behance**. Drop a project folder into a watched directory — the app uploads your images, generates AI copy with Google Gemini, and publishes with one click.
+A local-first content management system that automates publishing to **Instagram**, **Behance**, and **YouTube**. Drop a project folder into a watched directory — the app generates AI copy with Google Gemini, and publishes with one click. Runs on your machine or on a cloud VM accessed from any browser.
 
 ---
 
 ## Features
 
-- **Folder watcher** — drop a project folder into `input_instagram/` or `input_behance/` and it appears in the UI automatically
-- **AI copy generation** — Google Gemini analyses your images and writes captions, hooks, hashtags, alt text, and Behance descriptions
-- **Instagram publishing** — uploads images to Cloudinary, then publishes via the Instagram Graph API (single image or carousel up to 10 slides)
-- **Behance publishing** — headless Playwright automation opens the Behance editor, uploads images, adds text blocks, fills metadata, and publishes
-- **Live progress UI** — step-by-step progress widget shows exactly what's happening during automation and publishing
-- **History sidebar** — review your last N posts per platform
-- **No cloud dependency** — runs entirely on your machine; only outbound calls go to the APIs
+- **Folder watcher** — drop a folder into `input_instagram/`, `input_behance/` or `input_youtube/` and it appears in the UI automatically (video files wait until the copy finishes before queueing)
+- **AI copy generation** — Gemini analyses your images/video frames and writes captions, hooks, hashtags, alt text, Behance descriptions, and YouTube titles/descriptions/tags
+- **Instagram** — Cloudinary upload → Instagram Graph API (single image or carousel up to 10 slides); the 60-day access token now **auto-refreshes weekly**
+- **Behance** — headless Playwright automation: uploads images, adds text blocks, fills metadata, publishes
+- **YouTube** — official Data API v3: resumable uploads with retry, public/unlisted/private, scheduled publishing, playlists (existing or new), custom thumbnails, made-for-kids flag, and **built-in quota + daily-upload-limit tracking** so batches stop cleanly instead of failing mid-way
+- **Live progress UI** — per-platform progress (simultaneous publishes don't collide)
+- **History sidebar** — last N posts per platform; feeds the AI your brand voice
+- **Remote-ready** — optional password login (`APP_PASSWORD`), headless mode, systemd deployment; see `DEPLOYMENT.md`
 
 ---
 
 ## Architecture
 
 ```
-launch.py               ← single entry point (run this)
-  ├── src/watcher.py    ← watchdog observer on input_instagram/ and input_behance/
+launch.py               ← single entry point (run this; --headless for VMs)
+  ├── src/watcher.py    ← watchdog observer on input_instagram|behance|youtube/
   │     └── src/file_queue.py  ← JSON-file IPC queue between watcher and Streamlit
-  └── app.py (subprocess)      ← Streamlit UI
+  └── app.py (subprocess)      ← Streamlit UI (+ optional password gate)
         ├── ui/instagram_ui.py
-        │     ├── src/uploader.py         ← Cloudinary upload
-        │     ├── src/ai_generator.py     ← Gemini Vision + text generation
-        │     └── src/instagram_publisher.py  ← Instagram Graph API v25.0
+        │     ├── src/uploader.py             ← Cloudinary upload
+        │     ├── src/ai_generator.py         ← Gemini vision + text
+        │     ├── src/instagram_publisher.py  ← Instagram Graph API v25.0
+        │     └── src/instagram_token.py      ← weekly token auto-refresh → .env
         ├── ui/behance_ui.py
         │     └── src/behance_publisher.py    ← Playwright headless automation
+        ├── ui/youtube_ui.py
+        │     ├── src/youtube_auth.py         ← OAuth device flow (works on VMs)
+        │     ├── src/youtube_publisher.py    ← resumable uploads, playlists, thumbnails
+        │     └── src/youtube_quota.py        ← quota + upload-cap tracking (PT reset)
         ├── ui/progress_widget.py   ← background thread + live progress rendering
         └── src/history_manager.py  ← JSON history per platform
 ```
 
 ### IPC design
 
-`launch.py` (the watcher process) and `app.py` (the Streamlit subprocess) are separate OS processes. They communicate through JSON files in `.queue/`:
-
-| File | Purpose |
-|---|---|
-| `.queue/instagram.json` | Queue of pending Instagram project paths |
-| `.queue/behance.json` | Queue of pending Behance project paths |
-| `.queue/publish_progress.json` | Live step-by-step progress state |
-
-Both sides use a companion `.lock` file for atomic cross-process access.
+`launch.py` (watcher process) and `app.py` (Streamlit subprocess) communicate through JSON files in `.queue/` with companion `.lock` files for atomic cross-process access. Progress state is **namespaced per pipeline** (`progress_ig.json`, `progress_behance.json`, `progress_yt.json`, …) so long YouTube uploads and Instagram posts can run concurrently.
 
 ### Background thread pattern
 
-All blocking work (Cloudinary upload, Gemini API calls, Playwright automation) runs in daemon threads spawned by `start_publish_thread()`. The Streamlit script runner returns in milliseconds on every autorefresh tick, reading only the progress JSON file to render the UI. This eliminates the Python 3.13 `RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>` crash that occurs when blocking work is done in the script runner thread.
+All blocking work (uploads, Gemini calls, Playwright) runs in daemon threads spawned by `start_publish_thread()`. The Streamlit script runner only reads progress JSON on each autorefresh tick — this avoids the Python 3.13 re-entrant stdout crash.
 
 ---
 
@@ -55,236 +53,115 @@ All blocking work (Cloudinary upload, Gemini API calls, Playwright automation) r
 
 ### Prerequisites
 
-- Python 3.11 or 3.12 (recommended; 3.13 supported)
-- A Google account (for Gemini API key — free tier)
-- A Meta developer account (for Instagram Graph API)
-- A Cloudinary account (free tier)
-- A Behance account
+- Python 3.11–3.13
+- `ffmpeg` (for YouTube AI frame analysis + thumbnail extraction): `brew install ffmpeg` / `apt install ffmpeg`
+- Accounts: Google (Gemini + YouTube), Meta developer (Instagram), Cloudinary, Behance
 
-### 1. Clone and install
+### 1. Install
 
 ```bash
-git clone <repo-url>
-cd cms-local
-
+git clone <repo-url> && cd cms-local
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-
 pip install -r requirements.txt
 playwright install chromium
 ```
 
 ### 2. Configure credentials
 
-Copy `.env.example` to `.env` and fill in your credentials:
-
 ```bash
-cp .env.example .env
+cp .env.example .env             # then fill it in
 ```
-
-Open `.env` and set:
 
 | Variable | Description | Where to get it |
 |---|---|---|
 | `GEMINI_API_KEY` | Google Gemini API key | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — free |
-| `INSTAGRAM_ACCESS_TOKEN` | Instagram Login API token (`IGAA…`) | Meta developer portal — see below |
-| `INSTAGRAM_USER_ID` | Your Instagram scoped user ID | Returned by `/me` on `graph.instagram.com` |
+| `INSTAGRAM_ACCESS_TOKEN` | Instagram Login API token (`IGAA…`) | Meta developer portal (see below) — auto-refreshed weekly after first setup |
+| `INSTAGRAM_USER_ID` | Instagram scoped user ID | `/me` on `graph.instagram.com` |
 | `CLOUDINARY_URL` | Full Cloudinary URL | Cloudinary dashboard → API Keys |
-| `BEHANCE_EMAIL` | Your Behance login email | — |
-| `BEHANCE_PASSWORD` | Your Behance password | — |
-| `BEHANCE_CATEGORY` | Default project category | e.g. `Photography` |
-| `BEHANCE_TOOLS` | Comma-separated tools list | e.g. `CAPTURE ONE,FUJIFILM XT30` |
+| `BEHANCE_EMAIL` / `BEHANCE_PASSWORD` | Behance login | — |
+| `BEHANCE_CATEGORY` / `BEHANCE_TOOLS` | Project defaults | e.g. `Photography` / `CAPTURE ONE,FUJIFILM XT30` |
+| `YOUTUBE_MAX_UPLOADS_PER_DAY` | Local safety cap (default 10) | see `YOUTUBE_SETUP.md` |
+| `APP_PASSWORD` | Web UI login (set on VMs) | you |
 
-### 3. Getting an Instagram Access Token
+### 3. Instagram token (first time only)
 
-The app uses the **Instagram Login API** (not Facebook Login). You need a token that starts with `IGAA`.
+1. [developers.facebook.com](https://developers.facebook.com) → your app → add the **Instagram** product
+2. **Instagram → API Setup → Generate Token** (starts with `IGAA`) → paste into `.env`
+3. Required permissions: `instagram_basic`, `instagram_content_publish`
 
-1. Go to [developers.facebook.com](https://developers.facebook.com) and open your app
-2. Add the **Instagram** product to your app
-3. Under **Instagram → API Setup**, click **Generate Token** for your Instagram account
-4. Copy the token (starts with `IGAA`) into `.env` as `INSTAGRAM_ACCESS_TOKEN`
-5. The token is valid for 60 days; regenerate it before it expires
-
-**Required permissions:** `instagram_basic`, `instagram_content_publish`
-
-**Finding your User ID:** After setting the token, you can find your scoped user ID from `graph.instagram.com/v25.0/me` — the app uses this automatically.
+From then on the app refreshes the token every week automatically and writes it back to `.env` — no more 60-day expiry.
 
 ### 4. Behance login (first run)
 
-The Behance publisher uses Playwright to automate the browser. On first use:
+Click **Refresh Behance Login** in the sidebar, log in in the opened browser; the session is saved to `.browser_state/behance_state.json`.
 
-1. Click **Behance Login** in the Streamlit sidebar
-2. A browser window opens — log in manually
-3. The session is saved to `.browser_state/behance_state.json`
-4. Future runs reuse the saved session (no login needed until it expires)
+### 5. YouTube (first time only)
+
+Follow **`YOUTUBE_SETUP.md`** (~5 min): create a Google Cloud project, enable YouTube Data API v3, create a *"TVs and Limited Input devices"* OAuth client, drop the JSON into `.secrets/`, then click **Connect YouTube account** in the app and approve the shown code from any device.
 
 ---
 
 ## Usage
 
-### Start the CMS
-
 ```bash
-python launch.py
+python launch.py                  # starts watcher + UI at http://localhost:8501
+python launch.py --port 8888      # custom port
+python launch.py --headless       # server/VM mode (also auto-detected under systemd)
 ```
 
-This starts the file watcher and opens the Streamlit UI at `http://localhost:8501`.
+### Instagram
+Drop an image folder into `input_instagram/` → **🤖 Automate Everything** → review hook/captions/hashtags/alt-text → **🚀 APPROVE & PUBLISH LIVE**.
 
-Optional flags:
-```bash
-python launch.py --port 8888      # use a different port
-python launch.py --no-browser     # don't auto-open the browser
-```
+### Behance
+Drop an image folder into `input_behance/` → AI-generate or write the sections → **🚀 Approve & Publish**.
 
-### Publishing to Instagram
+### YouTube
+Drop a folder with video file(s) (optionally + a `.jpg`/`.png` thumbnail) into `input_youtube/` →
+**🤖 Automate Everything** (Gemini watches sampled frames, writes title/description/tags) →
+choose **visibility** (unlisted default / public / private), **schedule** (optional), **playlist** (pick existing or type a new name), **category**, **made-for-kids** →
+**🚀 APPROVE & UPLOAD**. The sidebar shows remaining API quota and today's upload count; batches that would exceed either limit are blocked up-front with the reset countdown (midnight Pacific).
 
-1. Drop a project folder containing `.jpg`, `.png`, or `.webp` images into `input_instagram/`
-2. The folder appears automatically in the **📸 Instagram** tab
-3. Optionally add AI context notes (e.g. "minimal architecture, golden hour")
-4. Click **🤖 Automate Everything** — the app uploads to Cloudinary and generates all copy
-5. Review and edit the hook, per-slide captions, hashtags, and alt texts
-6. Click **🚀 APPROVE & PUBLISH LIVE**
-
-The progress widget shows live step-by-step status. Single images and carousels (up to 10 slides) are supported.
-
-### Publishing to Behance
-
-1. Drop a project folder into `input_behance/`
-2. Switch to the **🎨 Behance** tab
-3. Optionally enter a text script or notes in the content editor
-4. Click **🚀 Publish to Behance**
-
-The Playwright automation: generates AI metadata, opens the editor, uploads images with padding and per-image text blocks, fills the metadata page (title, tags, category, tools, description), and publishes.
+> **Public uploads:** until your API project passes YouTube's one-time audit, publicly-set API uploads get locked private by YouTube. Default is therefore *unlisted* — flip to public in YouTube Studio in seconds, or request the audit once (see `YOUTUBE_SETUP.md`).
 
 ---
 
 ## Project folder structure
 
-Each project folder should contain only image files:
-
 ```
-input_instagram/
-  my-project/
-    01.jpg
-    02.jpg
-    03.jpg
-
-input_behance/
-  architecture-series/
-    hero.jpg
-    detail-01.jpg
-    detail-02.jpg
+input_instagram/my-project/      01.jpg 02.jpg 03.jpg
+input_behance/architecture/      hero.jpg detail-01.jpg
+input_youtube/travel-film/       final-cut.mp4 thumbnail.jpg
 ```
 
-Images are sorted alphabetically, so prefix filenames with numbers to control order.
+Files are sorted alphabetically — prefix with numbers to control order.
 
 ---
 
-## Directory layout
+## Deployment on a VM (Oracle Cloud etc.)
 
-```
-cms-local/
-├── app.py                    # Streamlit app (launched by launch.py)
-├── launch.py                 # Entry point — watcher + Streamlit launcher
-├── requirements.txt
-├── .env                      # Credentials (not committed)
-├── .env.example              # Credentials template
-│
-├── src/
-│   ├── ai_generator.py       # Gemini Vision + text generation
-│   ├── behance_publisher.py  # Playwright headless Behance automation
-│   ├── file_queue.py         # Cross-process JSON queue
-│   ├── history_manager.py    # JSON history per platform
-│   ├── instagram_publisher.py # Instagram Graph API v25.0
-│   ├── progress.py           # Thread-safe progress state (JSON file)
-│   ├── uploader.py           # Cloudinary image uploader
-│   └── watcher.py            # Watchdog observer
-│
-├── ui/
-│   ├── behance_ui.py         # Behance Streamlit UI
-│   ├── folder_picker.py      # Manual folder picker widget
-│   ├── instagram_ui.py       # Instagram Streamlit UI
-│   └── progress_widget.py    # Live progress panel + background thread manager
-│
-├── input_instagram/          # Drop Instagram project folders here
-├── input_behance/            # Drop Behance project folders here
-├── history/                  # Auto-generated publish history (JSON)
-├── .queue/                   # Auto-generated IPC files
-├── .browser_state/           # Auto-generated Behance session state
-└── logs/                     # Streamlit log file
-```
+See **`DEPLOYMENT.md`** for the full guide: systemd service, password login, and two access options (Tailscale — recommended, or Caddy HTTPS with a domain). Everything (including YouTube sign-in) works identically on a headless VM.
 
 ---
 
 ## AI model cascade
 
-The app tries models in this order, automatically falling back on quota/rate errors:
-
-| Priority | Model | Notes |
-|---|---|---|
-| 1 | `gemini-2.0-flash` | Best free quota, full vision support |
-| 2 | `gemini-1.5-flash` | High daily limit, reliable |
-| 3 | `gemini-2.5-flash-lite` | 10 RPM free |
-| 4 | `gemini-2.5-flash` | ~20 requests/day on free tier |
-
----
-
-## Instagram API details
-
-The app uses the **Instagram Graph API v25.0** at `https://graph.instagram.com/v25.0`.
-
-| Flow | Endpoints |
-|---|---|
-| Single image | `POST /{user_id}/media` → poll status → `POST /{user_id}/media_publish` |
-| Carousel | `POST /{user_id}/media` × N (carousel items) → `POST /{user_id}/media` (CAROUSEL) → `POST /{user_id}/media_publish` |
-
-Images must be publicly accessible URLs — Cloudinary provides these. The token is sent as `Authorization: Bearer <token>` (not as a URL parameter).
-
-**Caption limit:** 2,200 characters. The UI shows a live character count and blocks publishing if exceeded.
+Requests fall through on quota/rate errors:
+`gemini-2.0-flash` → `gemini-1.5-flash` → `gemini-2.5-flash-lite` → `gemini-2.5-flash`
 
 ---
 
 ## Troubleshooting
 
-**"INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID must be set in .env"**
-→ Copy `.env.example` to `.env` and fill in your credentials.
-
-**"Invalid OAuth access token" (code 190)**
-→ Your token has expired (60-day limit). Regenerate it in the Meta developer portal and update `.env`.
-
-**"Behance session expired or missing"**
-→ Click **Behance Login** in the sidebar to re-authenticate.
-
-**Playwright timeout errors on Behance**
-→ Behance's editor can be slow. The publisher has built-in waits and fallback selectors. If publishing consistently fails, check the screenshots saved to `.browser_state/` for visual debugging.
-
-**Images not detected in the watcher**
-→ Type `s` + Enter in the terminal dashboard to trigger a manual scan.
-
-**Gemini quota errors**
-→ The free tier has daily limits. The app cascades through models automatically. If all models are exhausted, wait until the next day or add billing at [aistudio.google.com](https://aistudio.google.com).
-
----
-
-## Environment variables reference
-
-```env
-# Google Gemini
-GEMINI_API_KEY=your_key_here
-
-# Instagram Graph API (Instagram Login token — starts with IGAA)
-INSTAGRAM_ACCESS_TOKEN=IGAAUr6...
-INSTAGRAM_USER_ID=26361529496800682
-
-# Behance credentials (used by Playwright automation)
-BEHANCE_EMAIL=you@example.com
-BEHANCE_PASSWORD=your_password
-BEHANCE_CATEGORY=Photography
-BEHANCE_TOOLS=CAPTURE ONE,FUJIFILM XT30
-
-# Cloudinary (full URL format)
-CLOUDINARY_URL=cloudinary://api_key:api_secret@cloud_name
-```
+**"INSTAGRAM_ACCESS_TOKEN … must be set"** → fill `.env`.
+**"Invalid OAuth access token" (code 190)** → token was revoked; generate a fresh one once, auto-refresh takes over again.
+**"Behance session expired"** → sidebar → Refresh Behance Login.
+**YouTube "uploadLimitExceeded"** → your channel hit YouTube's own 24h cap; queue resumes after midnight PT. Consider lowering `YOUTUBE_MAX_UPLOADS_PER_DAY` so the app stops earlier.
+**YouTube "quotaExceeded"** → the Cloud project's 10,000 daily units are spent; resets midnight PT (sidebar shows countdown).
+**Public YouTube video became private** → API project not audited yet; see `YOUTUBE_SETUP.md`.
+**Thumbnail skipped** → verify your phone at youtube.com/verify (YouTube requirement for custom thumbnails).
+**Gemini quota errors** → cascade handles it; if all models are exhausted, wait a day or add billing.
+**Folder not detected** → type `s` + Enter in the terminal dashboard, or use **Scan Now** in the UI.
 
 ---
 

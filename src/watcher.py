@@ -28,9 +28,17 @@ BASE_DIR        = Path(__file__).resolve().parent.parent
 INPUT_DIRS: dict[str, Path] = {
     "instagram": BASE_DIR / "input_instagram",
     "behance":   BASE_DIR / "input_behance",
+    "youtube":   BASE_DIR / "input_youtube",
 }
 
-VALID_EXTS     = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm",
+              ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
+PLATFORM_EXTS: dict[str, set[str]] = {
+    "instagram": IMAGE_EXTS,
+    "behance":   IMAGE_EXTS,
+    "youtube":   VIDEO_EXTS,
+}
 POLL_INTERVAL  = 2    # seconds — PollingObserver tick
 SCAN_INTERVAL  = 10   # seconds — background directory scan
 
@@ -62,28 +70,58 @@ def _try_enqueue(platform: str, path: Path, on_detected: DetectedCallback | None
     if not path.is_dir():
         return False
 
+    valid_exts = PLATFORM_EXTS.get(platform, IMAGE_EXTS)
+
     try:
-        images = [f for f in path.iterdir() if f.suffix.lower() in VALID_EXTS]
+        media = [f for f in path.iterdir() if f.suffix.lower() in valid_exts]
     except OSError:
         return False
 
-    if not images:
-        print(f"  [watcher:{platform}] Skipped (no images): {path.name}")
-        # Remove from seen so user can retry after adding images
+    if not media:
+        kind = "videos" if platform == "youtube" else "images"
+        print(f"  [watcher:{platform}] Skipped (no {kind}): {path.name}")
+        # Remove from seen so user can retry after adding files
         with _seen_lock:
             _seen.discard(path)
         return False
 
+    # Video files can take minutes to copy — wait until sizes are stable
+    # before queueing, otherwise the publisher may upload a half-copied file.
+    if platform == "youtube":
+        _wait_until_stable(media)
+
     fq_push(platform, path)
-    print(f"  [watcher:{platform}] Queued: {path.name} ({len(images)} image(s))")
+    print(f"  [watcher:{platform}] Queued: {path.name} ({len(media)} file(s))")
 
     if on_detected:
         try:
-            on_detected(platform, path, len(images))
+            on_detected(platform, path, len(media))
         except Exception:
             pass
 
     return True
+
+
+def _wait_until_stable(files: list[Path], interval: float = 2.0,
+                       stable_checks: int = 2, timeout: float = 900.0) -> None:
+    """Block until every file's size stops changing (copy finished)."""
+    deadline = time.time() + timeout
+    last_sizes: dict[Path, int] = {}
+    stable = 0
+    while time.time() < deadline:
+        try:
+            sizes = {f: f.stat().st_size for f in files if f.exists()}
+        except OSError:
+            time.sleep(interval)
+            continue
+        if sizes == last_sizes and sizes:
+            stable += 1
+            if stable >= stable_checks:
+                return
+        else:
+            stable = 0
+        last_sizes = sizes
+        time.sleep(interval)
 
 
 # ── Layer 1: PollingObserver event handler ────────────────────────────────────

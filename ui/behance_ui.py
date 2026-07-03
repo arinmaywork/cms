@@ -292,7 +292,7 @@ def render_behance_ui():
         else:
             st.warning("No session found")
         
-        if st.button("🔄 Refresh Behance Login", use_container_width=True):
+        if st.button("🔄 Refresh Behance Login", width="stretch"):
             script = pathlib.Path(__file__).resolve().parent.parent / "save_behance_session.py"
             if sys.platform == "darwin":
                  subprocess.Popen(["open", "-a", "Terminal", str(script)])
@@ -345,7 +345,7 @@ def render_behance_ui():
         # Flag exists from a previous run. Check if a real publisher is running
         # by looking at the progress file. If it's not active, the flag is stale
         # (left over from a crash) and would lock the UI indefinitely.
-        _prog_state = progress.read()
+        _prog_state = progress.read("behance")
         if _prog_state.get("active", False):
             st.session_state.bh_publishing = True
         else:
@@ -359,11 +359,11 @@ def render_behance_ui():
                     _pub_flag.unlink(missing_ok=True)
                 except Exception:
                     pass
-                progress.clear()
+                progress.clear("behance")
                 st.rerun()
     if st.session_state.bh_publishing:
         st.subheader("🚀 Publishing to Behance…")
-        state = progress.read()
+        state = progress.read("behance")
         steps = state.get("steps", [])
         active = state.get("active", False)
         if not steps and not active:
