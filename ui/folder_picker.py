@@ -65,7 +65,7 @@ def render_upload_widget(platform: str) -> None:
     with st.expander("⬆️ Upload from this device", expanded=False):
         st.checkbox(
             "⏸ Pause auto-refresh while I upload (recommended for many files)",
-            key="pause_autorefresh",
+            key=f"upl_pause_{platform}",
             help="The page normally refreshes every 3s to catch watcher events; "
                  "that can interrupt large browser uploads. Untick after saving.",
         )
