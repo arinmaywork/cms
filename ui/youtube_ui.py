@@ -128,9 +128,11 @@ def _render_sidebar():
 
             # Quota panel
             u = ytq.usage()
+            cap_str = (str(u["uploads_cap"]) if u["uploads_cap"] > 0
+                       else "auto — YouTube-governed")
             st.caption(
                 f"API quota today: **{u['units_used']:,} / {u['daily_quota']:,}** units\n\n"
-                f"Uploads today: **{u['uploads_today']} / {u['uploads_cap']}**\n\n"
+                f"Uploads today: **{u['uploads_today']}** (limit: {cap_str})\n\n"
                 f"Resets {ytq.time_until_reset_str()} (midnight PT)"
             )
             st.progress(min(1.0, u["units_used"] / max(1, u["daily_quota"])))
