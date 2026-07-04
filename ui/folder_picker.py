@@ -63,6 +63,12 @@ def render_upload_widget(platform: str) -> None:
     """
     exts = sorted(e.lstrip(".") for e in _valid_exts(platform))
     with st.expander("⬆️ Upload from this device", expanded=False):
+        st.checkbox(
+            "⏸ Pause auto-refresh while I upload (recommended for many files)",
+            key="pause_autorefresh",
+            help="The page normally refreshes every 3s to catch watcher events; "
+                 "that can interrupt large browser uploads. Untick after saving.",
+        )
         proj_name = st.text_input(
             "Project name",
             key=f"upl_name_{platform}",
@@ -75,8 +81,14 @@ def render_upload_widget(platform: str) -> None:
             key=f"upl_files_{platform}",
             help="On YouTube you can include a .jpg/.png to use as thumbnail.",
         )
-        if files and st.button("📥 Save & queue project",
-                               key=f"upl_go_{platform}", type="primary"):
+        n_seen = len(files) if files else 0
+        st.caption(f"Server has received **{n_seen}** file(s)."
+                   + ("" if n_seen else " If you selected files but this stays 0, "
+                      "tick the pause box above and re-add them."))
+        clicked = st.button("📥 Save & queue project",
+                            key=f"upl_go_{platform}", type="primary",
+                            disabled=not files)
+        if clicked and files:
             name = (proj_name or "").strip() or f"upload-{platform}"
             safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
             dest = INPUT_DIRS[platform] / safe

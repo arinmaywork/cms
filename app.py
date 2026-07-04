@@ -47,11 +47,14 @@ if _APP_PASSWORD:
         st.stop()
 
 # ── Auto-refresh every 3 s to pick up new watcher events ─────────────────────
-try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=3_000, key="cms_autorefresh")
-except ImportError:
-    pass
+# Can be paused from the upload widget: constant reruns interfere with large
+# browser uploads (files appear client-side but never register server-side).
+if not st.session_state.get("pause_autorefresh", False):
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=3_000, key="cms_autorefresh")
+    except ImportError:
+        pass
 
 # ── Weekly Instagram token auto-refresh (cheap no-op when not due) ────────────
 try:
