@@ -39,7 +39,9 @@ Verify on github.com that **no** `.env`, `.secrets/`, `.browser_state/` appear i
 ## Phase 2 — Provision the Oracle VM (15 min)
 
 1. OCI Console → Compute → Create Instance
-   - Image: **Ubuntu 24.04**, Shape: **VM.Standard.A1.Flex — 2 OCPU / 12 GB** (Always Free)
+   - Image: **Ubuntu 24.04**, Shape: **VM.Standard.A1.Flex — 2 OCPU / 12 GB** (Always Free).
+     If A1 is out of capacity, **VM.Standard.E2.1.Micro (1 GB)** works too — see the
+     E2.1.Micro notes below (swap is mandatory).
    - Add your SSH public key; note the public IP
 2. SSH in and install the stack:
    ```bash
@@ -51,6 +53,26 @@ Verify on github.com that **no** `.env`, `.secrets/`, `.browser_state/` appear i
    pip install -r requirements.txt
    playwright install chromium && playwright install-deps chromium
    ```
+
+### E2.1.Micro (1 GB RAM) notes
+
+The CMS itself is light (~300 MB). The only heavy step is **Behance** publishing,
+which launches headless Chromium (~400–600 MB) for a few minutes per publish.
+On 1 GB that can trigger the OOM killer — so add swap **before first use**:
+
+```bash
+sudo fallocate -l 3G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -h        # verify: Swap shows 3.0Gi
+```
+
+Expectations on the Micro:
+- Instagram + YouTube publishing: normal (plain HTTPS API calls)
+- Behance publishing: slower (≈1/8 CPU core + swap), occasionally may time out — just re-run
+- Don't keep many browser tabs of the UI open simultaneously
+- ARM→x86 note: none needed — everything is pure Python / prebuilt wheels on both
 
 ## Phase 3 — Transfer the tokens (the critical 2 minutes)
 
