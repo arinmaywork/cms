@@ -55,11 +55,55 @@ def _count_projects(platform: str) -> list[Path]:
     return results
 
 
+def render_upload_widget(platform: str) -> None:
+    """
+    Browser upload → saves files into input_<platform>/<project>/ on the
+    server and queues the project. Lets any device (phone/laptop) push
+    content without SFTP when the CMS runs on a VM.
+    """
+    exts = sorted(e.lstrip(".") for e in _valid_exts(platform))
+    with st.expander("⬆️ Upload from this device", expanded=False):
+        proj_name = st.text_input(
+            "Project name",
+            key=f"upl_name_{platform}",
+            placeholder="e.g. rome-travel-film",
+        )
+        files = st.file_uploader(
+            "Files",
+            type=exts + (["jpg", "jpeg", "png"] if platform == "youtube" else []),
+            accept_multiple_files=True,
+            key=f"upl_files_{platform}",
+            help="On YouTube you can include a .jpg/.png to use as thumbnail.",
+        )
+        if files and st.button("📥 Save & queue project",
+                               key=f"upl_go_{platform}", type="primary"):
+            name = (proj_name or "").strip() or f"upload-{platform}"
+            safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
+            dest = INPUT_DIRS[platform] / safe
+            dest.mkdir(parents=True, exist_ok=True)
+            saved = 0
+            for uf in files:
+                out = dest / Path(uf.name).name
+                with open(out, "wb") as fh:
+                    # copy in 8 MB chunks — avoids a second full copy in RAM
+                    while True:
+                        chunk = uf.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                saved += 1
+            fq_push(platform, dest)
+            st.success(f"✅ Saved {saved} file(s) to `{safe}` and queued it.")
+            st.rerun()
+
+
 def render_folder_picker(platform: str) -> None:
     """
-    Renders the detection status + scan button + manual loader.
-    Call this inside the "waiting for project" branch of each UI.
+    Renders the browser-upload widget + detection status + scan button +
+    manual loader. Call this inside the "waiting for project" branch of each UI.
     """
+    render_upload_widget(platform)
+
     input_dir = INPUT_DIRS[platform]
     projects  = _count_projects(platform)
 

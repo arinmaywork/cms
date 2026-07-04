@@ -1,6 +1,8 @@
 [server]
 fileWatcherType = "none"
-maxUploadSize = 200
+# Max browser-upload size in MB (videos). Uploads buffer in RAM — on a 1 GB
+# VM keep this ≤ 1024 and rely on the 3 GB swap for the occasional big file.
+maxUploadSize = 1024
 
 [browser]
 gatherUsageStats = false
