@@ -21,13 +21,14 @@ import streamlit as st
 
 import src.progress as progress
 import src.youtube_auth as yta
+import src.youtube_batch as ytb
 import src.youtube_quota as ytq
 from src.ai_generator import generate_youtube_metadata, extract_thumbnail_frame
 from src.file_queue import pop_one as fq_pop_one
 from src.history_manager import save_entry
 from src.youtube_publisher import (
     CATEGORIES, TITLE_MAX, TAGS_MAX_CHARS,
-    find_videos, find_thumbnails, list_playlists, publish_to_youtube,
+    find_videos, find_thumbnails, list_playlists,
 )
 from ui.progress_widget import start_publish_thread, render_progress
 from ui.folder_picker import render_folder_picker
@@ -161,12 +162,107 @@ def _render_sidebar():
                 st.rerun()
 
 
+# ── Upload queue panel ────────────────────────────────────────────────────────
+
+def _render_queue_panel():
+    """Persistent adaptive queue: uploads until YouTube pushes back, then
+    auto-resumes after the midnight-PT reset. Non-blocking — you can keep
+    preparing the next project while it runs."""
+    batch = ytb.read()
+    if not batch["items"]:
+        return
+
+    c = ytb.counts()
+    st.markdown("### 📦 Upload Queue")
+
+    # Wait / limit banner
+    if batch["resume_at"] and batch["resume_at"] > __import__("time").time():
+        import datetime as dt
+        resume_local = dt.datetime.fromtimestamp(batch["resume_at"]).strftime("%a %H:%M")
+        st.warning(
+            f"⏸ {batch.get('limit_note','YouTube limit reached')} — "
+            f"**auto-resumes ~{resume_local}** (after midnight PT). "
+            "This is YouTube's real capacity signal for your channel, "
+            "learned live rather than a preset number.",
+            icon="🕛",
+        )
+    elif batch["paused"]:
+        st.info("⏸ Queue paused.")
+    elif c["uploading"]:
+        st.info(f"🔄 Uploading now — {c['done']}/{c['total']} finished.")
+
+    obs = batch.get("observed_cap")
+    if obs:
+        st.caption(f"Observed channel capacity: **{obs['count']} uploads/day** "
+                   f"(learned from YouTube on {obs['date']})")
+
+    # Progress bar + live step detail of the current upload
+    if c["total"]:
+        st.progress(c["done"] / c["total"],
+                    text=f"{c['done']} done · {c['uploading']} uploading · "
+                         f"{c['pending']} pending · {c['deferred']} waiting for reset · "
+                         f"{c['failed']} failed")
+    prog = progress.read("yt")
+    if prog.get("active"):
+        active_steps = [s for s in prog.get("steps", []) if s["status"] == "active"]
+        for s in active_steps:
+            st.caption(f"🔄 {s['label']} — {s.get('detail','')}")
+
+    # Item table (compact)
+    with st.expander(f"Queue details ({c['total']} item(s))",
+                     expanded=c["failed"] > 0):
+        icon = {"pending": "⬜", "uploading": "🔄", "done": "✅",
+                "failed": "❌", "deferred": "🕛"}
+        for it in batch["items"]:
+            name = pathlib.Path(it["meta"]["path"]).name
+            line = f"{icon.get(it['status'],'⬜')} `{name}` — {it['status']}"
+            if it["url"]:
+                line += f" · [{it['url']}]({it['url']})"
+            if it["error"]:
+                line += f" · {it['error'][:90]}"
+            cols = st.columns([8, 1])
+            cols[0].markdown(line)
+            if it["status"] in ("pending", "deferred", "failed"):
+                if cols[1].button("✕", key=f"yt_q_rm_{it['id']}",
+                                  help="Remove from queue"):
+                    ytb.remove_item(it["id"])
+                    st.rerun()
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if batch["paused"] or batch["resume_at"]:
+            if st.button("▶️ Resume now", key="yt_q_resume",
+                         help="Clears the wait and retries immediately"):
+                ytb.set_paused(False)
+                ytb.ensure_worker()
+                st.rerun()
+        else:
+            if st.button("⏸ Pause queue", key="yt_q_pause"):
+                ytb.set_paused(True)
+                st.rerun()
+    with b2:
+        if c["failed"] and st.button(f"🔁 Retry {c['failed']} failed", key="yt_q_retry"):
+            ytb.retry_failed()
+            ytb.ensure_worker()
+            st.rerun()
+    with b3:
+        if c["done"] and st.button(f"🧹 Clear {c['done']} finished", key="yt_q_clear"):
+            ytb.clear_finished()
+            st.rerun()
+
+    st.divider()
+
+
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render_youtube_ui():
     _init()
     st.header("▶️ YouTube Publisher")
     _render_sidebar()
+
+    # Revive the batch worker after an app restart if work remains
+    if not ytb.worker_running():
+        ytb.ensure_worker()
 
     # ── Drain queue ───────────────────────────────────────────────────────────
     while True:
@@ -214,26 +310,8 @@ def render_youtube_ui():
             st.rerun()
         st.stop()
 
-    # ── Publishing in progress ────────────────────────────────────────────────
-    if st.session_state.yt_publishing:
-        st.subheader("🚀 Publishing to YouTube…")
-        placeholder = st.empty()
-        result = render_progress("yt", placeholder)
-        if result is not None:
-            results = result.get("results", [])
-            if result.get("success"):
-                links = "\n\n".join(f"✅ [{r['title']}]({r['url']}) — {r['privacy']}"
-                                    for r in results)
-                _set_status(f"✅ Published {len(results)} video(s)!\n\n{links}", "success")
-                _clear()
-            else:
-                partial = (f"\n\n{len(results)} video(s) DID upload before the "
-                           f"error: " + ", ".join(r["url"] for r in results)
-                           if results else "")
-                _set_status(f"❌ {result.get('error','Unknown error')}{partial}", "error")
-                st.session_state.yt_publishing = False
-            st.rerun()
-        st.stop()
+    # ── Upload queue panel (adaptive, YouTube-feedback-governed) ──────────────
+    _render_queue_panel()
 
     # ── Status banner ─────────────────────────────────────────────────────────
     if st.session_state.yt_status:
@@ -426,9 +504,9 @@ def render_youtube_ui():
     n_pl_adds = sum(1 for it in items if it["playlist_id"] or it["new_playlist_title"])
     n_new_pl  = 1 if new_playlist_title.strip() else 0
     planned   = ytq.estimate_cost(len(items), n_thumbs, n_pl_adds, n_new_pl)
-    ok, reason = ytq.can_publish(len(items), planned)
 
-    u = ytq.usage()
+    u   = ytq.usage()
+    obs = (ytb.read().get("observed_cap") or {}).get("count")
     rc1, rc2 = st.columns(2)
     with rc1:
         st.info(f"**Plan:** {len(items)} upload(s) · {privacy}"
@@ -437,28 +515,35 @@ def render_youtube_ui():
         for p in problems:
             st.caption(f"⚠️ {p}")
     with rc2:
-        st.info(f"**Quota:** ~{planned} units needed · {u['units_remaining']:,} left today · "
-                f"uploads {u['uploads_today']}/{u['uploads_cap']}")
+        pace = (f"~{max(1, -(-len(items) // obs))} day(s) at your channel's "
+                f"observed {obs}/day" if obs and len(items) > obs
+                else "pace set live by YouTube's feedback")
+        st.info(f"**Quota:** ~{planned} units · {u['units_remaining']:,} left today · "
+                f"ETA: {pace}")
 
-    if not ok:
-        st.error(reason)
+    if len(items) > 10:
+        st.caption(
+            "ℹ️ Large batch: the queue uploads continuously until YouTube signals "
+            "its daily limit, then auto-resumes after midnight PT — no babysitting "
+            "needed. Progress survives restarts."
+        )
 
-    can_publish = signed_in and ok and bool(items)
+    can_queue = signed_in and bool(items)
 
     bp, bc = st.columns([2, 1])
     with bp:
-        if st.button("🚀 APPROVE & UPLOAD TO YOUTUBE", type="primary",
-                     width="stretch", disabled=not can_publish,
+        if st.button(f"🚀 QUEUE {len(items)} VIDEO(S) FOR UPLOAD", type="primary",
+                     width="stretch", disabled=not can_queue,
                      key="yt_publish"):
             for it in items:
                 save_entry("youtube", project.name,
                            f"{it['title']}\n\n{it['description']}",
                            [str(it["path"])])
-            items_snapshot = [dict(it) for it in items]
-            start_publish_thread(
-                fn=lambda: publish_to_youtube(items_snapshot),
-                platform="yt",
-            )
+            added = ytb.enqueue(items)
+            ytb.ensure_worker()
+            _clear()
+            _set_status(f"✅ Queued {added} video(s) — uploads run in the "
+                        "background (see 📦 Upload Queue).", "success")
             st.rerun()
     with bc:
         if st.button("🗑️ Clear Project", width="stretch", key="yt_clear"):

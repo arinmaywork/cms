@@ -60,10 +60,12 @@ def daily_quota() -> int:
 
 
 def max_uploads_per_day() -> int:
+    """0 (default) = auto mode: no local cap, YouTube's own feedback governs
+    the pace (see src/youtube_batch.py). Set >0 to enforce a local cap."""
     try:
-        return int(os.getenv("YOUTUBE_MAX_UPLOADS_PER_DAY", "10"))
+        return int(os.getenv("YOUTUBE_MAX_UPLOADS_PER_DAY", "0"))
     except ValueError:
-        return 10
+        return 0
 
 
 # ── State I/O ─────────────────────────────────────────────────────────────────
@@ -139,14 +141,14 @@ def can_publish(n_videos: int, planned_cost: int) -> tuple[bool, str]:
     Returns (ok, reason). reason explains what's blocking and when it resets.
     """
     u = usage()
-    if u["uploads_today"] + n_videos > u["uploads_cap"]:
+    # uploads_cap == 0 → auto mode: YouTube's live feedback governs the pace
+    if u["uploads_cap"] > 0 and u["uploads_today"] + n_videos > u["uploads_cap"]:
         left = max(0, u["uploads_cap"] - u["uploads_today"])
         return False, (
             f"Daily upload cap reached: {u['uploads_today']}/{u['uploads_cap']} "
             f"used, {left} slot(s) left but {n_videos} requested. "
             f"Resets {time_until_reset_str()} (midnight Pacific). "
-            "You can raise YOUTUBE_MAX_UPLOADS_PER_DAY in .env if your channel "
-            "allows more."
+            "Set YOUTUBE_MAX_UPLOADS_PER_DAY=0 for auto mode (YouTube-governed)."
         )
     if planned_cost > u["units_remaining"]:
         return False, (
