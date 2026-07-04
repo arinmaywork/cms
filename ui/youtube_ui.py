@@ -68,7 +68,7 @@ def _clear():
     st.session_state.yt_automating = False
     for key in list(st.session_state.keys()):
         if key.startswith(("yt_title_", "yt_desc_", "yt_tags_", "yt_thumb_",
-                           "yt_privacy_", "yt_kids_", "yt_sched_")):
+                           "yt_privacy_", "yt_kids_", "yt_sched_", "yt_page")):
             del st.session_state[key]
 
 
@@ -295,15 +295,10 @@ def render_youtube_ui():
             if result.get("success"):
                 meta = result.get("meta", {})
                 st.session_state.yt_meta.update(meta)
-                # Seed widget keys
-                project = st.session_state.yt_project
-                videos = find_videos(project) if project else []
-                for j, v in enumerate(videos):
-                    m = meta.get(v.name)
-                    if m:
-                        st.session_state[f"yt_title_{j}"] = m["title"]
-                        st.session_state[f"yt_desc_{j}"]  = m["description"]
-                        st.session_state[f"yt_tags_{j}"]  = m["tags_str"]
+                # Drop stale widget keys so editors re-seed from fresh AI metadata
+                for key in list(st.session_state.keys()):
+                    if key.startswith(("yt_title_", "yt_desc_", "yt_tags_")):
+                        del st.session_state[key]
                 st.session_state.yt_automating = False
                 _set_status("✅ AI metadata ready — review below, then publish.", "success")
             else:
@@ -430,38 +425,73 @@ def render_youtube_ui():
 
     st.divider()
 
-    # ── Per-video metadata ────────────────────────────────────────────────────
+    # ── Per-video metadata (paginated — a 100-video page would freeze the UI) ─
     st.markdown("### 📝 Video Details")
     thumb_options = ["(auto: YouTube default)"] + [t.name for t in thumbs]
-    has_multi = len(videos) > 1
+    n_videos      = len(videos)
+    PAGE_SIZE     = 10
+    show_preview  = n_videos <= 6   # inline players only for small projects
 
-    for i, v in enumerate(videos):
+    def _meta_of(name: str) -> dict:
+        return st.session_state.yt_meta.setdefault(name, {})
+
+    if n_videos > PAGE_SIZE:
+        n_pages = -(-n_videos // PAGE_SIZE)
+        pc1, pc2 = st.columns([1, 3])
+        with pc1:
+            page = st.selectbox(f"Page ({PAGE_SIZE}/page)",
+                                list(range(1, n_pages + 1)),
+                                key="yt_page",
+                                format_func=lambda p: f"{p} of {n_pages}")
+        with pc2:
+            st.caption(f"{n_videos} videos. Edits are kept when you switch pages. "
+                       "Videos without edits publish with their AI/filename title.")
+    else:
+        page = 1
+    start = (page - 1) * PAGE_SIZE
+
+    for gi in range(start, min(start + PAGE_SIZE, n_videos)):
+        v = videos[gi]
+        m = _meta_of(v.name)
         with st.expander(f"🎬 **{v.name}**  ({v.stat().st_size/(1024*1024):.0f} MB)",
-                         expanded=not has_multi):
-            try:
-                st.video(str(v))
-            except Exception:
-                pass
+                         expanded=(n_videos == 1)):
+            if show_preview:
+                try:
+                    st.video(str(v))
+                except Exception:
+                    pass
 
-            title = st.text_input(f"Title", key=f"yt_title_{i}",
-                                  max_chars=TITLE_MAX,
-                                  placeholder=v.stem.replace("_", " ").title())
-            t_len = len(st.session_state.get(f"yt_title_{i}", ""))
-            st.caption(f"{t_len}/{TITLE_MAX} characters")
+            # Seed widgets from the durable store, write edits back each rerun
+            tkey, dkey, gkey, thkey = (f"yt_title_{gi}", f"yt_desc_{gi}",
+                                       f"yt_tags_{gi}", f"yt_thumb_{gi}")
+            if tkey not in st.session_state:
+                st.session_state[tkey] = m.get("title", "")
+            if dkey not in st.session_state:
+                st.session_state[dkey] = m.get("description", "")
+            if gkey not in st.session_state:
+                st.session_state[gkey] = m.get("tags_str", "")
 
-            st.text_area("Description", key=f"yt_desc_{i}", height=200,
-                         placeholder="First two lines show above the fold — hook here.")
+            m["title"] = st.text_input("Title", key=tkey, max_chars=TITLE_MAX,
+                                       placeholder=v.stem.replace("_", " ").title())
+            st.caption(f"{len(m['title'])}/{TITLE_MAX} characters")
 
-            tags_str = st.text_input("Tags (comma-separated)", key=f"yt_tags_{i}",
-                                     placeholder="travel film, cinematic, fujifilm")
-            tag_chars = len(st.session_state.get(f"yt_tags_{i}", ""))
-            st.caption(f"~{tag_chars}/{TAGS_MAX_CHARS} characters total")
+            m["description"] = st.text_area(
+                "Description", key=dkey, height=160,
+                placeholder="First two lines show above the fold — hook here.")
+
+            m["tags_str"] = st.text_input("Tags (comma-separated)", key=gkey,
+                                          placeholder="travel film, cinematic, fujifilm")
+            st.caption(f"~{len(m['tags_str'])}/{TAGS_MAX_CHARS} characters total")
 
             tc1, tc2 = st.columns([2, 1])
             with tc1:
-                thumb_sel = st.selectbox("Thumbnail", thumb_options, key=f"yt_thumb_{i}")
+                if thkey not in st.session_state:
+                    st.session_state[thkey] = m.get("thumb", thumb_options[0])
+                if st.session_state[thkey] not in thumb_options:
+                    st.session_state[thkey] = thumb_options[0]
+                m["thumb"] = st.selectbox("Thumbnail", thumb_options, key=thkey)
             with tc2:
-                if st.button("🖼 Extract frame from video", key=f"yt_extract_{i}"):
+                if st.button("🖼 Extract frame from video", key=f"yt_extract_{gi}"):
                     p = extract_thumbnail_frame(v)
                     if p:
                         _set_status(f"✅ Frame saved as `{p.name}` — reselect thumbnail.", "success")
@@ -476,17 +506,19 @@ def render_youtube_ui():
 
     items = []
     problems = []
+    n_untitled = 0
     for i, v in enumerate(videos):
-        title = st.session_state.get(f"yt_title_{i}", "").strip() or v.stem.replace("_", " ").title()
-        desc  = st.session_state.get(f"yt_desc_{i}", "")
-        tags  = [t.strip() for t in st.session_state.get(f"yt_tags_{i}", "").split(",") if t.strip()]
-        thumb_sel = st.session_state.get(f"yt_thumb_{i}", thumb_options[0])
+        m     = st.session_state.yt_meta.get(v.name, {})
+        title = (m.get("title") or "").strip() or v.stem.replace("_", " ").title()
+        desc  = m.get("description", "")
+        tags  = [t.strip() for t in m.get("tags_str", "").split(",") if t.strip()]
+        thumb_sel = m.get("thumb", thumb_options[0])
         thumb = None
         if thumb_sel and thumb_sel != "(auto: YouTube default)":
             cand = project / thumb_sel
             thumb = cand if cand.exists() else None
-        if not st.session_state.get(f"yt_title_{i}", "").strip():
-            problems.append(f"Video {i+1}: no title (will use '{title}')")
+        if not (m.get("title") or "").strip():
+            n_untitled += 1
         items.append({
             "path":               v,
             "title":              title,
@@ -516,6 +548,9 @@ def render_youtube_ui():
                 + (f" · playlist" if (playlist_id or new_playlist_title.strip()) else ""))
         for p in problems:
             st.caption(f"⚠️ {p}")
+        if n_untitled:
+            st.caption(f"⚠️ {n_untitled} video(s) have no custom/AI title — "
+                       "they'll use their (cleaned) filename as title.")
     with rc2:
         pace = (f"~{max(1, -(-len(items) // obs))} day(s) at your channel's "
                 f"observed {obs}/day" if obs and len(items) > obs
