@@ -119,6 +119,45 @@ def render_folder_picker(platform: str) -> None:
     input_dir = INPUT_DIRS[platform]
     projects  = _count_projects(platform)
 
+    # ── Loose files dropped directly into the input dir (common via SFTP) ─────
+    # Projects must be folders; offer one-click grouping instead of a dead end.
+    try:
+        loose = sorted(f for f in input_dir.iterdir()
+                       if f.is_file() and f.suffix.lower() in _valid_exts(platform))
+    except OSError:
+        loose = []
+    if loose:
+        st.warning(
+            f"Found **{len(loose)} loose file(s)** directly in `{input_dir.name}/` — "
+            "projects must be *folders*. Group them into one:",
+            icon="📄",
+        )
+        gc1, gc2 = st.columns([3, 1])
+        with gc1:
+            grp_name = st.text_input(
+                "New project folder name", key=f"loose_name_{platform}",
+                value="", placeholder="e.g. integrated-photonics",
+                label_visibility="collapsed",
+            )
+        with gc2:
+            if st.button("📁 Group & queue", key=f"loose_go_{platform}",
+                         type="primary", width="stretch"):
+                name = (grp_name or "").strip() or f"project-{platform}"
+                safe = "".join(c if c.isalnum() or c in "-_ " else "_"
+                               for c in name).strip()
+                dest = input_dir / safe
+                dest.mkdir(parents=True, exist_ok=True)
+                moved = 0
+                for f in loose:
+                    try:
+                        f.rename(dest / f.name)
+                        moved += 1
+                    except OSError as e:
+                        st.error(f"Could not move {f.name}: {e}")
+                fq_push(platform, dest)
+                st.success(f"✅ Moved {moved} file(s) into `{safe}` and queued it.")
+                st.rerun()
+
     # ── Status card ───────────────────────────────────────────────────────────
     if projects:
         st.success(
@@ -156,7 +195,10 @@ def render_folder_picker(platform: str) -> None:
                         st.toast(f"Queued {pushed} folder(s).", icon="📂")
                         st.rerun()
                     else:
-                        st.toast("No image folders found in the input directory.", icon="⚠️")
+                        kind = "video" if platform == "youtube" else "image"
+                        st.toast(f"No {kind} project folders found — note: files must "
+                                 "be inside a folder, not loose in the input directory.",
+                                 icon="⚠️")
             except Exception as e:
                 st.error(f"Scan error: {e}")
 
