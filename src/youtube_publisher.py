@@ -109,22 +109,68 @@ def find_thumbnails(folder: Path) -> list[Path]:
 
 
 # ── Error classification ──────────────────────────────────────────────────────
+# LIMIT_MARKER is embedded in friendly messages for daily-limit conditions so
+# the batch worker (src/youtube_batch.py) can classify reliably. Never shown
+# to users — the batch strips it.
+LIMIT_MARKER = "[[LIMIT]]"
+
+
+def _error_reasons(exc: Exception) -> list[str]:
+    """Extract structured error 'reason' codes from a googleapiclient HttpError.
+    Far more reliable than substring-matching str(exc): Google's human message
+    ('you have exceeded your quota') doesn't contain the reason token."""
+    reasons: list[str] = []
+    try:
+        from googleapiclient.errors import HttpError
+        if not isinstance(exc, HttpError):
+            return reasons
+        try:
+            for d in (exc.error_details or []):
+                if isinstance(d, dict) and d.get("reason"):
+                    reasons.append(str(d["reason"]))
+        except Exception:
+            pass
+        try:
+            import json as _json
+            data = _json.loads(exc.content.decode("utf-8", "replace"))
+            for e in data.get("error", {}).get("errors", []):
+                if e.get("reason"):
+                    reasons.append(str(e["reason"]))
+        except Exception:
+            pass
+    except ImportError:
+        pass
+    return reasons
+
+
+_LIMIT_REASONS = {"uploadlimitexceeded", "quotaexceeded", "dailylimitexceeded",
+                  "ratelimitexceeded", "userratelimitexceeded"}
+_LIMIT_PHRASES = ("exceeded your quota", "exceeded the number of videos",
+                  "upload limit", "uploadlimitexceeded", "quotaexceeded",
+                  "dailylimitexceeded")
+
 
 def _friendly_api_error(exc: Exception) -> str:
     s = str(exc)
-    if "uploadLimitExceeded" in s:
-        return ("YouTube says this channel has reached its upload limit for "
-                "the last 24 hours. Remaining videos stay queued — try again "
-                f"after the reset ({quota.time_until_reset_str()}), or lower "
-                "YOUTUBE_MAX_UPLOADS_PER_DAY to stop earlier next time.")
-    if "quotaExceeded" in s or "dailyLimitExceeded" in s:
-        return ("YouTube API daily quota exhausted. It resets at midnight "
-                f"Pacific ({quota.time_until_reset_str()}).")
-    if "youtubeSignupRequired" in s:
+    sl = s.lower()
+    reasons = [r.lower() for r in _error_reasons(exc)]
+
+    if "uploadlimitexceeded" in reasons or "upload limit" in sl \
+            or "exceeded the number of videos" in sl:
+        return (f"{LIMIT_MARKER} YouTube says this channel has reached its "
+                "upload limit for the last 24 hours. Remaining videos stay "
+                f"queued and resume automatically ({quota.time_until_reset_str()}).")
+    if any(r in _LIMIT_REASONS for r in reasons) \
+            or any(p in sl for p in _LIMIT_PHRASES):
+        return (f"{LIMIT_MARKER} YouTube API daily quota exhausted. It resets "
+                f"at midnight Pacific ({quota.time_until_reset_str()}).")
+    if "youtubesignuprequired" in reasons or "youtubeSignupRequired" in s:
         return ("This Google account has no YouTube channel. Open youtube.com "
                 "once with this account and create the channel, then retry.")
-    if "invalidCredentials" in s or "authError" in s or "Invalid Credentials" in s:
+    if "authError" in s or "invalid credentials" in sl or "invalid_grant" in sl:
         return "YouTube session expired — click 'Connect YouTube account' again."
+    if reasons:
+        return f"{s} [reason: {','.join(reasons)}]"
     return s
 
 

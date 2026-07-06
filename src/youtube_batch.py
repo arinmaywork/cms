@@ -81,11 +81,13 @@ def read() -> dict[str, Any]:
 # ── Queue operations (called from UI) ─────────────────────────────────────────
 
 def enqueue(items: list[dict[str, Any]]) -> int:
-    """Add publish items (same meta dicts publish_to_youtube takes)."""
+    """Add publish items (same meta dicts publish_to_youtube takes).
+    De-dupes against EVERY existing item — including done — so re-queuing a
+    project after a restart can never upload duplicates. To re-publish a
+    finished video intentionally, use 'Clear finished' first."""
     with _lock:
         data = _load()
-        existing_paths = {it["meta"].get("path") for it in data["items"]
-                          if it["status"] in ("pending", "deferred", "uploading")}
+        existing_paths = {it["meta"].get("path") for it in data["items"]}
         added = 0
         for meta in items:
             meta = dict(meta)
@@ -95,12 +97,13 @@ def enqueue(items: list[dict[str, Any]]) -> int:
             if meta["path"] in existing_paths:
                 continue        # don't double-queue the same file
             data["items"].append({
-                "id":     uuid.uuid4().hex[:8],
-                "meta":   meta,
-                "status": "pending",   # pending|uploading|done|failed|deferred
-                "url":    "",
-                "error":  "",
-                "ts":     time.time(),
+                "id":       uuid.uuid4().hex[:8],
+                "meta":     meta,
+                "status":   "pending",   # pending|uploading|done|failed|deferred
+                "url":      "",
+                "error":    "",
+                "attempts": 0,
+                "ts":       time.time(),
             })
             added += 1
         _save(data)
@@ -177,15 +180,22 @@ def ensure_worker() -> bool:
 
 
 def _is_limit_error(err: str) -> tuple[bool, str]:
-    """Return (is_daily_limit, note). Matches the friendly messages from
-    youtube_publisher._friendly_api_error and raw API reasons."""
+    """Return (is_daily_limit, note). Primary signal: the LIMIT_MARKER that
+    youtube_publisher embeds after structured HttpError-reason parsing.
+    Substring fallbacks cover preflight messages and raw API text."""
     e = err.lower()
-    if "uploadlimitexceeded" in e or "upload limit" in e:
+    if "[[limit]]" in e or "uploadlimitexceeded" in e or "upload limit" in e \
+       or "exceeded the number of videos" in e:
         return True, "YouTube channel upload limit reached"
     if "quotaexceeded" in e or "quota exhausted" in e or "not enough api quota" in e \
-       or "dailylimitexceeded" in e:
+       or "dailylimitexceeded" in e or "exceeded your quota" in e:
         return True, "YouTube API daily quota exhausted"
     return False, ""
+
+
+# Circuit breaker: this many consecutive item failures (whatever the error)
+# means something systemic — stop burning the queue and wait for the reset.
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 def _mark(data_mutation) -> None:
@@ -200,6 +210,7 @@ def _worker_loop() -> None:
     from src.youtube_publisher import publish_to_youtube
 
     print("  [yt:batch] worker started")
+    consecutive_failures = 0
     while True:
         with _lock:
             data = _load()
@@ -213,14 +224,20 @@ def _worker_loop() -> None:
             time.sleep(min(60, data["resume_at"] - now))
             continue
         if data["resume_at"] and now >= data["resume_at"]:
-            # Waiting period over — reactivate deferred items
+            # Waiting period over — reactivate deferred items, and give failed
+            # items (< 3 attempts) another chance: most "failures" in a limit
+            # window are really limit errors in disguise.
             def _reactivate(d):
                 d["resume_at"] = 0
                 d["limit_note"] = ""
                 for it in d["items"]:
                     if it["status"] == "deferred":
                         it["status"] = "pending"
+                    elif (it["status"] == "failed"
+                          and it.get("attempts", 0) < 3):
+                        it["status"], it["error"] = "pending", ""
             _mark(_reactivate)
+            print("  [yt:batch] reset window passed — queue reactivated")
             continue
 
         # Recover an item stuck in "uploading" from a previous crash
@@ -236,6 +253,7 @@ def _worker_loop() -> None:
             for it in d["items"]:
                 if it["id"] == item_id:
                     it["status"] = "uploading"
+                    it["attempts"] = it.get("attempts", 0) + 1
         _mark(_set_uploading)
 
         meta = dict(nxt["meta"])
@@ -249,12 +267,24 @@ def _worker_loop() -> None:
                     if it["id"] == item_id:
                         it["status"], it["url"] = "done", url
             _mark(_set_done)
+            consecutive_failures = 0
             print(f"  [yt:batch] done: {meta['path']} → {url}")
             time.sleep(_gap_seconds())
             continue
 
         err = str(result.get("error", "unknown error"))
         limited, note = _is_limit_error(err)
+        err_display = err.replace("[[LIMIT]]", "").strip()
+
+        if not limited:
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                # Same-looking failures back to back: almost certainly a
+                # systemic condition (undetected limit, expired auth, network).
+                # Stop burning through the queue; park until the reset.
+                limited = True
+                note = (f"{MAX_CONSECUTIVE_FAILURES} consecutive failures "
+                        f"(last: {err_display[:80]}) — pausing as a safety measure")
 
         if limited:
             # YouTube said stop → learn today's real capacity, park until reset
@@ -262,22 +292,24 @@ def _worker_loop() -> None:
             resume_at = time.time() + quota.seconds_until_reset() + 300  # +5 min buffer
             def _defer(d):
                 d["resume_at"]  = resume_at
-                d["limit_note"] = f"{note} after {u['uploads_today']} upload(s) today"
-                d["observed_cap"] = {"date": u["date"], "count": u["uploads_today"]}
+                d["limit_note"] = f"{note} — after {u['uploads_today']} upload(s) today"
+                if u["uploads_today"] > 0:
+                    d["observed_cap"] = {"date": u["date"], "count": u["uploads_today"]}
                 for it in d["items"]:
-                    if it["id"] == item_id or it["status"] == "pending":
+                    if it["id"] == item_id or it["status"] in ("pending", "uploading"):
                         it["status"] = "deferred"
                         it["error"]  = ""
             _mark(_defer)
+            consecutive_failures = 0
             print(f"  [yt:batch] {note} — resuming after midnight PT "
-                  f"(observed capacity today: {u['uploads_today']})")
+                  f"(uploads completed today: {u['uploads_today']})")
             continue
 
         # Genuine per-item failure → mark failed, move on
         def _set_failed(d):
             for it in d["items"]:
                 if it["id"] == item_id:
-                    it["status"], it["error"] = "failed", err[:300]
+                    it["status"], it["error"] = "failed", err_display[:300]
         _mark(_set_failed)
-        print(f"  [yt:batch] failed: {meta['path']} — {err[:120]}")
+        print(f"  [yt:batch] failed: {meta['path']} — {err_display[:120]}")
         time.sleep(10)
