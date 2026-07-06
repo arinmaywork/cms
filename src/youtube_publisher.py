@@ -300,6 +300,10 @@ def _upload_one(yt, video_path: Path, meta: dict[str, Any],
                                 f"in {sleep:.0f}s…")
                 time.sleep(sleep)
                 continue
+            # Google charges quota for FAILED insert attempts too — record it
+            # so the local meter never silently drifts below Google's real one.
+            quota.record("videos.insert", success=False,
+                         note=f"FAILED attempt: {video_path.name}")
             raise
 
     quota.record("videos.insert", note=clean["title"])

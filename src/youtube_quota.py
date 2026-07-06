@@ -97,13 +97,14 @@ def _save(data: dict[str, Any]) -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def record(method: str, note: str = "") -> None:
-    """Record one API call's quota cost (and count uploads)."""
+def record(method: str, note: str = "", success: bool = True) -> None:
+    """Record one API call's quota cost. Units are charged for every attempt
+    (Google bills failed calls too); the uploads counter tracks successes only."""
     cost = COSTS.get(method, 1)
     with _lock:
         data = _load()
         data["units"] += cost
-        if method == "videos.insert":
+        if method == "videos.insert" and success:
             data["uploads"] += 1
         data["events"].append({
             "ts": time.time(), "method": method, "cost": cost, "note": note,
