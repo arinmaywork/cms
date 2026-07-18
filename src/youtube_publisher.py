@@ -95,15 +95,19 @@ def sanitize_metadata(title: str, description: str, tags: list[str]) -> dict[str
 
 
 def find_videos(folder: Path) -> list[Path]:
+    from src.natsort import natkey
     try:
-        return sorted(f for f in folder.iterdir() if f.suffix.lower() in VIDEO_EXTS)
+        return sorted((f for f in folder.iterdir() if f.suffix.lower() in VIDEO_EXTS),
+                      key=lambda f: natkey(f.name))
     except OSError:
         return []
 
 
 def find_thumbnails(folder: Path) -> list[Path]:
+    from src.natsort import natkey
     try:
-        return sorted(f for f in folder.iterdir() if f.suffix.lower() in THUMB_EXTS)
+        return sorted((f for f in folder.iterdir() if f.suffix.lower() in THUMB_EXTS),
+                      key=lambda f: natkey(f.name))
     except OSError:
         return []
 
@@ -209,6 +213,19 @@ def list_playlists() -> list[dict[str, str]]:
         if not token:
             break
     return out
+
+
+def ensure_playlist(title: str, privacy: str = "unlisted") -> str:
+    """Return the ID of the channel's playlist with this title, creating it
+    only if it doesn't exist. Idempotent — safe to call once per video."""
+    want = title.strip().lower()
+    try:
+        for p in list_playlists():
+            if p["title"].strip().lower() == want:
+                return p["id"]
+    except Exception as e:
+        print(f"  [yt] playlist lookup failed ({e}) — will create")
+    return create_playlist(title, privacy)
 
 
 def create_playlist(title: str, privacy: str = "unlisted",
@@ -422,12 +439,14 @@ def publish_to_youtube(items: list[dict[str, Any]]) -> dict[str, Any]:
 
             pl_id = it.get("playlist_id") or ""
             new_pl = (it.get("new_playlist_title") or "").strip()
-            if new_pl:
+            if new_pl and not pl_id:
                 if new_pl not in new_playlist_ids:
-                    new_playlist_ids[new_pl] = create_playlist(
+                    # ensure_playlist reuses an existing playlist of the same
+                    # name — repeated single-item calls can't create duplicates
+                    new_playlist_ids[new_pl] = ensure_playlist(
                         new_pl, privacy=it.get("privacy", "unlisted")
                         if it.get("privacy") != "private" else "unlisted")
-                    notes.append(f"playlist '{new_pl}' created")
+                    notes.append(f"playlist '{new_pl}' ready")
                 pl_id = new_playlist_ids[new_pl]
             if pl_id:
                 try:

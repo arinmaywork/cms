@@ -30,8 +30,10 @@ CHAR_LIMIT = 2_200
 def _images(folder: pathlib.Path) -> list[pathlib.Path]:
     if not folder:
         return []
+    from src.natsort import natkey
     try:
-        return sorted(f for f in folder.iterdir() if f.suffix.lower() in VALID_EXTS)
+        return sorted((f for f in folder.iterdir() if f.suffix.lower() in VALID_EXTS),
+                      key=lambda f: natkey(f.name))
     except OSError:
         return []
 

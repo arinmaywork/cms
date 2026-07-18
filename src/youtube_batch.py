@@ -240,10 +240,15 @@ def _worker_loop() -> None:
             print("  [yt:batch] reset window passed — queue reactivated")
             continue
 
+        # Natural order (1.1.2 before 1.1.10) regardless of enqueue order,
+        # so uploads — and therefore playlist order — follow the curriculum.
+        from src.natsort import natkey
+        by_order = sorted(data["items"],
+                          key=lambda it: natkey(Path(it["meta"]["path"]).name))
         # Recover an item stuck in "uploading" from a previous crash
-        nxt = next((it for it in data["items"] if it["status"] == "uploading"), None)
+        nxt = next((it for it in by_order if it["status"] == "uploading"), None)
         if nxt is None:
-            nxt = next((it for it in data["items"] if it["status"] == "pending"), None)
+            nxt = next((it for it in by_order if it["status"] == "pending"), None)
         if nxt is None:
             print("  [yt:batch] queue empty — worker exiting")
             return
@@ -258,6 +263,30 @@ def _worker_loop() -> None:
 
         meta = dict(nxt["meta"])
         meta["path"] = Path(meta["path"])
+
+        # Resolve a named playlist ONCE and stamp the ID onto every queued
+        # item that references it — prevents one-playlist-per-video dupes
+        # (publish_to_youtube's ensure_playlist is a second safety net).
+        npt = (meta.get("new_playlist_title") or "").strip()
+        if npt and not meta.get("playlist_id"):
+            try:
+                from src.youtube_publisher import ensure_playlist
+                pl_privacy = (meta.get("privacy", "unlisted")
+                              if meta.get("privacy") != "private" else "unlisted")
+                pid = ensure_playlist(npt, pl_privacy)
+                def _stamp(d):
+                    for it in d["items"]:
+                        if (it["meta"].get("new_playlist_title") or "").strip().lower() == npt.lower():
+                            it["meta"]["playlist_id"] = pid
+                            it["meta"]["new_playlist_title"] = ""
+                _mark(_stamp)
+                meta["playlist_id"] = pid
+                meta["new_playlist_title"] = ""
+                print(f"  [yt:batch] playlist '{npt}' resolved → {pid}")
+            except Exception as e:
+                print(f"  [yt:batch] playlist resolve failed ({e}) — "
+                      "publisher will handle it per-item")
+
         result = publish_to_youtube([meta])
 
         if result.get("success"):
