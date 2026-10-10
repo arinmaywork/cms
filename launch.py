@@ -1,35 +1,19 @@
 """
-launch.py
-─────────────────────────────────────────────────────────────────────────────
-The single entry point for the entire CMS.
+launch.py — single entry point for the CMS.
 
-Run it:
-    python launch.py                  # default port 8501
-    python launch.py --port 8888      # custom port
-    python launch.py --no-browser     # skip auto-open
+    python launch.py                 # local, opens browser, live dashboard
+    python launch.py --headless      # server/VM (auto-detected under systemd)
 
-What it does
-────────────
-1. Validates that .env exists and GEMINI_API_KEY is set.
-2. Creates all required directories (.queue/, input_*, history/, .browser_state/).
-3. Starts the watchdog observer (in THIS process, on a background thread).
-4. Launches `streamlit run app.py` as a managed subprocess.
-5. Opens the browser automatically (unless --no-browser).
-6. Runs a live terminal dashboard showing:
-   - Watcher status (which folders are being monitored)
-   - A log of every detected project (platform, name, image count, time)
-   - Keyboard shortcuts
-7. On Ctrl+C  → stops Streamlit subprocess, stops watcher, clears queue files,
-                 prints a clean exit message.
+This process (always running) owns the background services:
+  • resumable upload service   (src/upload_server.py, port CMS_UPLOAD_PORT=8502)
+  • YouTube queue supervisor    (restarts the batch worker after reboots/crashes;
+                                 a cross-process flock guarantees one worker)
+  • Instagram token refresher   (weekly; 6 h backoff after failures)
+and runs Streamlit (app.py) as a managed subprocess in its own session.
 
-IPC architecture
-────────────────
-  launch.py (this process)
-    └── watcher thread   →  writes to  .queue/instagram.json
-                                       .queue/behance.json
-  streamlit subprocess
-    └── app.py           →  reads from .queue/instagram.json  (via file_queue.pop_all)
-                                       .queue/behance.json
+Why its own session: on Python 3.13, Streamlit sharing our process group got
+SIGINT (terminal) + SIGTERM (us) ms apart → re-entrant stdout flush crash.
+start_new_session=True ⇒ exactly one signal.
 """
 
 import argparse
@@ -37,361 +21,171 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
-from datetime import datetime
 from pathlib import Path
 
-# ── Ensure project root is importable ─────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-from src.watcher import start_watcher, scan_once
-from src.file_queue import clear_all as fq_clear_all, peek as fq_peek
+LOG_DIR = ROOT / "logs"
+LOG_FILE = LOG_DIR / "streamlit.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "archive",
+                 "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 
-# ── ANSI colour helpers (Windows-safe via colorama if available) ───────────────
-try:
-    from colorama import init as _cinit, Fore, Style
-    _cinit(autoreset=True)
-    def _c(text: str, code: str) -> str:
-        return code + text + Style.RESET_ALL
-except ImportError:
-    class Fore:  # type: ignore[no-redef]
-        GREEN = CYAN = YELLOW = RED = MAGENTA = WHITE = ""
-    class Style:  # type: ignore[no-redef]
-        RESET_ALL = BRIGHT = ""
-    def _c(text: str, code: str) -> str:
-        return text
-
-def green(t: str)   -> str: return _c(t, Fore.GREEN)
-def cyan(t: str)    -> str: return _c(t, Fore.CYAN)
-def yellow(t: str)  -> str: return _c(t, Fore.YELLOW)
-def red(t: str)     -> str: return _c(t, Fore.RED)
-def bold(t: str)    -> str: return _c(t, Style.BRIGHT)
-def magenta(t: str) -> str: return _c(t, Fore.MAGENTA)
-
-
-# ── Required directories ──────────────────────────────────────────────────────
-REQUIRED_DIRS = [
-    ROOT / "input_instagram",
-    ROOT / "input_behance",
-    ROOT / "input_youtube",
-    ROOT / "history",
-    ROOT / ".queue",
-    ROOT / ".browser_state",
-    ROOT / ".secrets",
-]
-
-
-# ── Pre-flight checks ─────────────────────────────────────────────────────────
 def _preflight() -> list[str]:
-    """Return a list of warning strings (empty = all good)."""
-    warnings: list[str] = []
-
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        warnings.append(".env file not found — copy .env.example to .env and fill in credentials.")
-    else:
-        if not os.getenv("GEMINI_API_KEY"):
-            warnings.append("GEMINI_API_KEY is not set in .env  →  get a free key at https://aistudio.google.com/apikey")
-        if not os.getenv("INSTAGRAM_ACCESS_TOKEN"):
-            warnings.append("INSTAGRAM_ACCESS_TOKEN is not set (Instagram publishing will fail)")
-        if not os.getenv("BEHANCE_EMAIL"):
-            warnings.append("BEHANCE_EMAIL is not set (Behance publishing will fail)")
-        if not os.getenv("APP_PASSWORD"):
-            warnings.append("APP_PASSWORD is not set — anyone who can reach the port can use the app "
-                            "(fine locally; set it before exposing on a VM)")
-
-    yt_secret = ROOT / ".secrets" / "youtube_client_secret.json"
-    if not (yt_secret.exists() or os.getenv("YOUTUBE_CLIENT_SECRET_FILE")):
-        warnings.append("YouTube client secret not found — see YOUTUBE_SETUP.md "
-                        "(YouTube publishing disabled until then)")
-
-    import shutil as _sh
-    if not _sh.which("ffmpeg"):
-        warnings.append("ffmpeg not found — YouTube AI will work from filename only "
-                        "and frame/thumbnail extraction is disabled "
-                        "(install: brew install ffmpeg / apt install ffmpeg)")
-
-    return warnings
+    import shutil
+    w = []
+    if not (ROOT / ".env").exists():
+        w.append(".env not found — copy .env.example and fill it in")
+    for key, why in [("GEMINI_API_KEY", "AI copy disabled"),
+                     ("INSTAGRAM_ACCESS_TOKEN", "Instagram publishing disabled"),
+                     ("BEHANCE_EMAIL", "Behance publishing disabled")]:
+        if not os.getenv(key):
+            w.append(f"{key} not set — {why}")
+    if not os.getenv("APP_PASSWORD"):
+        w.append("APP_PASSWORD not set — anyone who can reach the ports can use the app")
+    if not ((ROOT / ".secrets/youtube_client_secret.json").exists()
+            or os.getenv("YOUTUBE_CLIENT_SECRET_FILE")):
+        w.append("YouTube client secret missing — see YOUTUBE_SETUP.md")
+    if not shutil.which("ffmpeg"):
+        w.append("ffmpeg not found — YouTube AI falls back to filenames")
+    return w
 
 
-# ── Event log ─────────────────────────────────────────────────────────────────
-_event_log: list[tuple[str, str, str, int]] = []   # (time, platform, name, count)
-_MAX_LOG = 30
+def _rotate_log() -> None:
+    try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
+            LOG_FILE.replace(LOG_FILE.with_suffix(".log.1"))
+    except OSError:
+        pass
 
 
-def _on_detected(platform: str, folder: Path, image_count: int) -> None:
-    """Callback from watcher thread — appends to the event log."""
-    ts = datetime.now().strftime("%H:%M:%S")
-    _event_log.append((ts, platform, folder.name, image_count))
-    if len(_event_log) > _MAX_LOG:
-        _event_log.pop(0)
-    # Print inline (will be visible between dashboard redraws)
-    icon = {"instagram": "📸", "behance": "🎨", "youtube": "▶️"}.get(platform, "📁")
-    print(
-        f"\n  {icon}  {cyan(ts)}  "
-        f"{bold(folder.name)}  [{platform}]  "
-        f"{yellow(str(image_count))} image(s)  → queued for UI"
-    )
-
-
-# ── Dashboard renderer ────────────────────────────────────────────────────────
-def _banner() -> str:
-    lines = [
-        "",
-        bold("╔══════════════════════════════════════════════════════╗"),
-        bold("║") + magenta("        📱  LOCAL SOCIAL MEDIA CMS  — RUNNING        ") + bold("║"),
-        bold("╚══════════════════════════════════════════════════════╝"),
-    ]
-    return "\n".join(lines)
-
-
-def _render_dashboard(url: str, observer_alive: bool) -> None:
-    os.system("cls" if os.name == "nt" else "clear")
-    print(_banner())
-    print()
-
-    # Status row
-    w_status = green("● ACTIVE") if observer_alive else red("○ STOPPED")
-    print(f"  Watcher   {w_status}")
-    print(f"  UI        {green('● ' + url)}")
-    print()
-
-    # Watched folders
-    print(f"  {bold('Watching:')}")
-    print(f"    📸  {cyan(str(ROOT / 'input_instagram'))}")
-    print(f"    🎨  {cyan(str(ROOT / 'input_behance'))}")
-    print(f"    ▶️  {cyan(str(ROOT / 'input_youtube'))}")
-    print()
-
-    # Pending queue lengths
-    ig_q = fq_peek("instagram")
-    bh_q = fq_peek("behance")
-    yt_q = fq_peek("youtube")
-    if ig_q or bh_q or yt_q:
-        print(f"  {bold('Pending (not yet opened in UI):')}")
-        if ig_q:
-            print(f"    📸  Instagram: {yellow(str(len(ig_q)))} project(s)")
-        if bh_q:
-            print(f"    🎨  Behance:   {yellow(str(len(bh_q)))} project(s)")
-        if yt_q:
-            print(f"    ▶️  YouTube:   {yellow(str(len(yt_q)))} project(s)")
-        print()
-
-    # Recent events
-    if _event_log:
-        print(f"  {bold('Recent detections:')}")
-        for ts, platform, name, count in reversed(_event_log[-8:]):
-            icon = {"instagram": "📸", "behance": "🎨", "youtube": "▶️"}.get(platform, "📁")
-            print(f"    {icon}  {cyan(ts)}  {bold(name)}  "
-                  f"[{platform}]  {yellow(str(count))} image(s)")
-        print()
-    else:
-        print(f"  {bold('Recent detections:')}  {yellow('none yet')}")
-        print(f"  {yellow('→  Drop a project folder into one of the watched directories above.')}")
-        print()
-
-    # Manual scan hint
-    print(f"  {bold('Tip:')} If a folder isn't detected, type {cyan('s')} + Enter to scan manually.")
-    print()
-    # Controls
-    print(f"  {bold('Controls:')}")
-    print(f"    Ctrl+C  — stop watcher and Streamlit")
-    print()
-
-
-# ── Subprocess management ─────────────────────────────────────────────────────
-def _find_streamlit() -> str:
-    """Return the streamlit executable path inside the active venv."""
-    venv_scripts = ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin")
-    candidate    = venv_scripts / ("streamlit.exe" if os.name == "nt" else "streamlit")
-    if candidate.exists():
-        return str(candidate)
-    # Fallback: hope it's on PATH
-    return "streamlit"
-
-
-def _launch_streamlit(port: int) -> tuple[subprocess.Popen, "IO[str]"]:
-    streamlit_exe = _find_streamlit()
-    cmd = [
-        streamlit_exe, "run", "app.py",
-        "--server.port", str(port),
-        "--server.headless", "true",
-        "--server.fileWatcherType", "none",
-        "--browser.gatherUsageStats", "false",
-    ]
-
-    # Create logs directory if it doesn't exist
-    log_dir = ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_fh = open(log_dir / "streamlit.log", "a")  # noqa: SIM115
-
-    # ── Environment: keep PYTHONUNBUFFERED as a secondary defence ────────────
-    # Even though it doesn't fully solve the re-entrancy issue (Streamlit
-    # reinitialises sys.stdout after startup), it removes one layer of
-    # buffering and speeds up I/O to the log file.
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-
-    # ── Process isolation: the real fix for the double-signal crash ───────────
-    #
-    # ROOT CAUSE (Python 3.13 + macOS):
-    #   Without start_new_session, Streamlit inherits launch.py's process group.
-    #   When SIGINT reaches the terminal (Ctrl+C, tab close, st_autorefresh
-    #   self-interrupt, etc.) the OS fans it out to EVERY process in the group,
-    #   so Streamlit gets SIGINT directly.  At the same moment, _shutdown() also
-    #   sends SIGTERM to Streamlit.  Streamlit now has TWO signals queued in
-    #   milliseconds.  Both fire bootstrap.py:signal_handler() → server.stop()
-    #   → click.secho("Stopping…") → sys.stdout.flush().  Signal #1 starts
-    #   flushing; signal #2 arrives mid-flush on the SAME thread and re-enters
-    #   the same BufferedWriter.  Python 3.13 raises:
-    #     RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>
-    #   (Python ≤3.12 silently corrupted the write instead of crashing.)
-    #
-    # FIX: start_new_session=True puts Streamlit in its own OS session/group.
-    #   Terminal signals never reach it.  _shutdown() sends exactly ONE SIGTERM.
-    #   One signal → one signal_handler call → no re-entrancy.
-    #
-    # Windows note: start_new_session is not supported on Windows; the existing
-    #   proc.terminate() path in _shutdown() is correct there.
-    popen_kwargs: dict = dict(
-        cwd=str(ROOT),
-        stdout=log_fh,
-        stderr=log_fh,
-        env=env,
-    )
+def _launch_streamlit(port: int, bind: str):
+    _rotate_log()
+    exe = ROOT / ".venv" / ("Scripts/streamlit.exe" if os.name == "nt" else "bin/streamlit")
+    cmd = [str(exe) if exe.exists() else "streamlit", "run", "app.py",
+           "--server.port", str(port), "--server.headless", "true",
+           "--server.fileWatcherType", "none", "--browser.gatherUsageStats", "false"]
+    if bind:
+        cmd += ["--server.address", bind]
+    fh = open(LOG_FILE, "a")  # noqa: SIM115
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    kw = dict(cwd=str(ROOT), stdout=fh, stderr=fh, env=env)
     if os.name != "nt":
-        popen_kwargs["start_new_session"] = True
-
-    proc = subprocess.Popen(cmd, **popen_kwargs)
-    return proc, log_fh
+        kw["start_new_session"] = True
+    return subprocess.Popen(cmd, **kw), fh
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Local Social Media CMS launcher")
-    parser.add_argument("--port",       type=int, default=8501, help="Streamlit port (default: 8501)")
-    parser.add_argument("--no-browser", action="store_true",    help="Don't open browser automatically")
-    parser.add_argument("--headless",   action="store_true",
-                        help="Server mode (VM/systemd): no browser, no live terminal dashboard")
-    args = parser.parse_args()
-
-    # Auto-detect non-interactive environments (systemd, nohup, docker)
-    headless = args.headless or not sys.stdout.isatty()
-    if headless:
-        args.no_browser = True
-
-    url = f"http://localhost:{args.port}"
-
-    # ── Create directories ────────────────────────────────────────────────────
-    for d in REQUIRED_DIRS:
-        d.mkdir(parents=True, exist_ok=True)
-
-    # ── Pre-flight ────────────────────────────────────────────────────────────
-    warnings = _preflight()
-
-    print(_banner())
-    print()
-
-    if warnings:
-        print(f"  {bold('⚠  Warnings:')} (app will still launch — fix before publishing)")
-        for w in warnings:
-            print(f"    {yellow('→')} {w}")
-        print()
-
-    # ── Clear stale queue files from a previous run ───────────────────────────
-    fq_clear_all()
-
-    # ── Start watcher ─────────────────────────────────────────────────────────
-    print(f"  {bold('Starting file watcher…')}", end="", flush=True)
-    observer = start_watcher(on_detected=_on_detected)
-    print(f"  {green('done')}")
-
-    # ── Start Streamlit ───────────────────────────────────────────────────────
-    print(f"  {bold('Starting Streamlit on')} {cyan(url)} …", end="", flush=True)
-    streamlit_proc, streamlit_log_fh = _launch_streamlit(args.port)
-    time.sleep(2.5)   # give Streamlit time to bind the port
-
-    if streamlit_proc.poll() is not None:
-        print(f"\n  {red('Streamlit failed to start.')} Check that all requirements are installed.")
-        observer.stop()
-        sys.exit(1)
-
-    print(f"  {green('done')}")
-
-    # ── Open browser ──────────────────────────────────────────────────────────
-    if not args.no_browser:
-        print(f"  {bold('Opening browser…')}", end="", flush=True)
-        time.sleep(0.5)
-        webbrowser.open(url)
-        print(f"  {green('done')}")
-
-    print()
-    print(f"  {green('Everything is running.')}  Press {bold('Ctrl+C')} to stop.")
-    time.sleep(1.5)
-
-    # ── Live dashboard loop ───────────────────────────────────────────────────
-    def _shutdown(sig=None, frame=None):
-        print(f"\n\n  {yellow('Shutting down…')}")
+def _services_loop(stop: threading.Event) -> None:
+    """YouTube queue supervisor (30 s) + Instagram token refresh (30 min tick;
+    the module itself decides whether a refresh is actually due)."""
+    from src.youtube_batch import ensure_worker
+    from src.instagram_token import refresh_if_due
+    last_ig = 0.0
+    while not stop.is_set():
         try:
-            observer.stop()
-            observer.join(timeout=3)
-        except Exception:
-            pass
+            ensure_worker()
+        except Exception as e:
+            print(f"  [supervisor] queue check failed: {e}")
+        if time.time() - last_ig > 1800:
+            last_ig = time.time()
+            try:
+                refresh_if_due()
+            except Exception as e:
+                print(f"  [supervisor] IG token check failed: {e}")
+        stop.wait(30)
+
+
+def _dashboard(url: str, upload_url: str) -> None:
+    from src.projects import list_projects
+    from src.youtube_batch import counts
+    os.system("cls" if os.name == "nt" else "clear")
+    print("\n  📱  LOCAL SOCIAL MEDIA CMS — RUNNING\n")
+    print(f"  UI        {url}\n  Uploads   {upload_url}\n")
+    for p in ("instagram", "behance", "youtube"):
+        print(f"  {p:<10} {len(list_projects(p))} project(s) waiting")
+    c = counts()
+    if c["total"]:
+        print(f"\n  YouTube queue: {c['done']}/{c['total']} done · {c['pending']} pending · "
+              f"{c['deferred']} waiting reset · {c['failed']} failed")
+    print("\n  Ctrl+C to stop.")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Local Social Media CMS")
+    ap.add_argument("--port", type=int, default=8501)
+    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--headless", action="store_true",
+                    help="server mode: no browser, no screen-clearing dashboard")
+    args = ap.parse_args()
+    headless = args.headless or not sys.stdout.isatty()
+
+    for d in REQUIRED_DIRS:
+        (ROOT / d).mkdir(parents=True, exist_ok=True)
+
+    print("\n  📱  LOCAL SOCIAL MEDIA CMS\n")
+    for w in _preflight():
+        print(f"    ⚠  {w}")
+
+    bind = os.getenv("CMS_BIND_ADDRESS", "")
+    up_port = int(os.getenv("CMS_UPLOAD_PORT", "8502"))
+    host = bind if bind and bind != "0.0.0.0" else "localhost"
+    url, upload_url = f"http://{host}:{args.port}", f"http://{host}:{up_port}"
+
+    from src.upload_server import start as start_upload_server
+    try:
+        start_upload_server(bind, up_port)
+    except OSError as e:
+        print(f"    ⚠  upload service could not start on port {up_port}: {e}")
+
+    stop = threading.Event()
+    threading.Thread(target=_services_loop, args=(stop,), daemon=True,
+                     name="services").start()
+
+    proc, fh = _launch_streamlit(args.port, bind)
+    time.sleep(2.5)
+    if proc.poll() is not None:
+        print(f"  ❌ Streamlit failed to start — see {LOG_FILE}")
+        sys.exit(1)
+    print(f"  ✅ UI {url}   ✅ uploads {upload_url}")
+    if not (args.no_browser or headless):
+        webbrowser.open(url)
+
+    def _shutdown(*_):
+        print("\n  Shutting down…")
+        stop.set()
         try:
             if os.name == "nt":
-                # Windows: terminate the process directly
-                streamlit_proc.terminate()
+                proc.terminate()
             else:
-                # Unix: Streamlit runs in its own process group (start_new_session).
-                # Kill the whole group so Playwright subprocesses also get cleaned up.
-                try:
-                    os.killpg(os.getpgid(streamlit_proc.pid), signal.SIGTERM)
-                except ProcessLookupError:
-                    pass  # process already gone
-            streamlit_proc.wait(timeout=5)
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=5)
         except Exception:
             try:
-                streamlit_proc.kill()
+                proc.kill()
             except Exception:
                 pass
-        try:
-            streamlit_log_fh.close()
-        except Exception:
-            pass
-        fq_clear_all()
-        print(f"  {green('Stopped cleanly.')}  Goodbye 👋\n")
+        fh.close()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT,  _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    try:
-        while True:
-            # Restart Streamlit if it crashes unexpectedly
-            if streamlit_proc.poll() is not None:
-                print(f"\n  {yellow('Streamlit exited unexpectedly — restarting…')}")
-                # Close the old log file handle before opening a new one
-                try:
-                    streamlit_log_fh.close()
-                except Exception:
-                    pass
-                streamlit_proc, streamlit_log_fh = _launch_streamlit(args.port)
-                time.sleep(2)
-
-            if headless:
-                time.sleep(10)   # no screen-clearing dashboard in server mode
-            else:
-                _render_dashboard(url, observer.is_alive())
-                time.sleep(3)
-
-    except KeyboardInterrupt:
-        _shutdown()
+    while True:
+        if proc.poll() is not None:
+            print("  ⚠  Streamlit exited — restarting…")
+            fh.close()
+            proc, fh = _launch_streamlit(args.port, bind)
+        if not headless:
+            _dashboard(url, upload_url)
+        time.sleep(10 if headless else 5)
 
 
 if __name__ == "__main__":

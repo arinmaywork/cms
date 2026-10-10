@@ -2,6 +2,11 @@
 .env
 .browser_state/
 
+# ── Private reference docs (CONTAIN REAL CREDENTIALS — never commit) ──────────
+PROJECT_REFERENCE.md
+*.private.md
+_private/
+
 # ── Runtime / IPC (cleared on every launch) ───────────────────────────────────
 .queue/
 

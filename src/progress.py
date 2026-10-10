@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.fsutil import atomic_write_json, load_json
+
 BASE_DIR   = Path(__file__).resolve().parent.parent
 _QUEUE_DIR = BASE_DIR / ".queue"
 _lock      = threading.Lock()   # guards in-process concurrent access
@@ -166,13 +168,8 @@ def is_active(ns: str) -> bool:
 # ── Internal I/O ──────────────────────────────────────────────────────────────
 
 def _read_raw(ns: str) -> dict[str, Any]:
-    pf = _progress_file(ns)
-    if not pf.exists():
-        return _empty()
-    try:
-        return json.loads(pf.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return _empty()
+    data = load_json(_progress_file(ns), None)
+    return data if isinstance(data, dict) else _empty()
 
 
 def _write(ns: str, data: dict[str, Any]) -> None:
@@ -180,6 +177,6 @@ def _write(ns: str, data: dict[str, Any]) -> None:
     pf.parent.mkdir(parents=True, exist_ok=True)
     _acquire_file_lock(ns)
     try:
-        pf.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        atomic_write_json(pf, data)
     finally:
         _release_file_lock(ns)

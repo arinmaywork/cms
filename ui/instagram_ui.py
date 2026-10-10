@@ -1,362 +1,212 @@
 """
-ui/instagram_ui.py
+ui/instagram_ui.py — Instagram page.
+
+Drafts (Cloudinary URLs, hook, per-slide text, alt text, hashtags) persist in
+<project>/.cms.json — written by the automation thread itself and on every
+edit — so a refresh/restart never loses work. Published projects are moved
+to archive/instagram/ so they can't be published twice.
 """
 
-import pathlib
 import traceback
-from typing import Any
+from pathlib import Path
 
 import streamlit as st
 from PIL import Image
 
-from src.ai_generator import (
-    generate_title_text,
-    generate_image_text,
-    generate_footer_text,
-    generate_alt_text,
-)
-from src.history_manager import get_last_n, save_entry
-from src.instagram_publisher import publish_to_instagram
-from src.file_queue import pop_one as fq_pop_one
-from src.uploader import upload_multiple
-from ui.progress_widget import start_publish_thread, render_progress
-from ui.folder_picker import render_folder_picker
 import src.progress as progress
+from src.ai_generator import (generate_alt_text, generate_footer_text,
+                              generate_image_text, generate_title_text)
+from src.history_manager import save_entry
+from src.instagram_publisher import publish_to_instagram
+from src.projects import archive_project, load_draft, media_files, save_draft
+from src.uploader import upload_multiple
+from ui.folder_picker import render_project_picker
+from ui.progress_widget import live_progress, start_publish_thread
 
-VALID_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 CHAR_LIMIT = 2_200
-
-
-def _images(folder: pathlib.Path) -> list[pathlib.Path]:
-    if not folder:
-        return []
-    from src.natsort import natkey
-    try:
-        return sorted((f for f in folder.iterdir() if f.suffix.lower() in VALID_EXTS),
-                      key=lambda f: natkey(f.name))
-    except OSError:
-        return []
+EMPTY = {"title": "", "footer": "", "urls": {}, "texts": {}, "alts": {}}
 
 
 def _init():
-    if "ig_urls" not in st.session_state: st.session_state.ig_urls = {}
-    if "ig_image_texts" not in st.session_state: st.session_state.ig_image_texts = {}
-    if "ig_alt_texts" not in st.session_state: st.session_state.ig_alt_texts = {}
-    if "ig_queue" not in st.session_state: st.session_state.ig_queue = []
-
-    defaults = {
-        "ig_project":     None,
-        "ig_title":       "",
-        "ig_footer":      "",
-        "ig_status":      "",
-        "ig_status_type": "info",
-        "ig_publishing":  False,
-        "ig_automating":  False,   # True while automation background thread is running
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+    for k, v in {"ig_project": None, "ig_d": dict(EMPTY), "ig_toast": "",
+                 "ig_error": "", "ig_automating": False, "ig_publishing": False}.items():
+        st.session_state.setdefault(k, v)
 
 
-def _set_status(msg, kind="info"):
-    st.session_state.ig_status = msg
-    st.session_state.ig_status_type = kind
+def _drop_widgets():
+    for k in [k for k in st.session_state if str(k).startswith("igw_")]:
+        del st.session_state[k]
 
 
-def _clear():
+def _open(path: Path):
+    st.session_state.ig_project = path
+    st.session_state.ig_d = {**EMPTY, **load_draft(path).get("instagram", {})}
+    _drop_widgets()
+
+
+def _close():
     st.session_state.ig_project = None
-    st.session_state.ig_title = ""
-    st.session_state.ig_footer = ""
-    st.session_state.ig_urls = {}
-    st.session_state.ig_image_texts = {}
-    st.session_state.ig_alt_texts = {}
-    st.session_state.ig_status = ""
-    st.session_state.ig_publishing = False
-    st.session_state.ig_automating = False
-
-    for key in list(st.session_state.keys()):
-        if any(key.startswith(p) for p in ["ig_url_w_", "ig_cap_w_", "ig_alt_w_", "ig_title_ed_", "ig_footer_ed_"]):
-            del st.session_state[key]
+    st.session_state.ig_d = dict(EMPTY)
+    _drop_widgets()
 
 
-def _assemble_caption(title, image_texts, footer, images):
-    parts = []
-    if title.strip(): parts.append(title.strip())
-    for img in images:
-        txt = image_texts.get(img.name, "").strip()
-        if txt: parts.append(txt)
-    if footer.strip(): parts.append(footer.strip())
-    return "\n\n".join(parts)
+def _save():
+    p = st.session_state.ig_project
+    if p and Path(p).exists():
+        data = load_draft(p)
+        data["instagram"] = st.session_state.ig_d
+        save_draft(p, data)
 
 
-# ── Background automation worker ──────────────────────────────────────────────
-# Runs in a daemon thread spawned by start_publish_thread().
-# NEVER call st.* from here — this is not the Streamlit script runner thread.
-# Results are written to the progress file; the UI thread reads them on the
-# next autorefresh tick.
+def _seed(key: str, value: str) -> str:
+    st.session_state.setdefault(key, value)
+    return key
 
-def _run_automation(images: list[pathlib.Path], project_name: str, notes: str) -> None:
-    """Upload images + generate all AI copy.  Called from a background thread."""
-    step_labels = (
-        ["☁️ Upload images to Cloudinary", "✍️ Generate hook / title", "🏷️ Generate hashtags"]
-        + [f"🖼️ AI copy: {img.name}" for img in images]
-    )
 
-    progress.start("ig_automation", step_labels)
-    step = 0
-    urls: dict[str, str] = {}
-    image_texts: dict[str, str] = {}
-    alt_texts: dict[str, str] = {}
-    title = ""
-    footer = ""
+# ── Background automation (no st.* in here) ──────────────────────────────────
 
+def _run_automation(project: Path, images: list[Path], notes: str) -> None:
+    ns = "ig_automation"
+    progress.start(ns, ["☁️ Upload images to Cloudinary", "✍️ Hook", "🏷️ Hashtags"]
+                   + [f"🖼️ {img.name}" for img in images])
     try:
-        # ── Step 0: upload ────────────────────────────────────────────────────
-        progress.update("ig_automation", step, "active", "Uploading to Cloudinary…")
-        uploaded = upload_multiple(images)
-        for i, u in enumerate(uploaded):
-            urls[images[i].name] = u
-        progress.update("ig_automation", step, "done", f"{len(uploaded)} image(s) uploaded")
-        step += 1
-
-        # ── Step 1: title / hook ──────────────────────────────────────────────
-        progress.update("ig_automation", step, "active", "Calling Gemini…")
-        title = generate_title_text("instagram", project_name, notes)
-        progress.update("ig_automation", step, "done", "Done")
-        step += 1
-
-        # ── Step 2: footer / hashtags ─────────────────────────────────────────
-        progress.update("ig_automation", step, "active", "Calling Gemini…")
-        footer = generate_footer_text("instagram", project_name, notes)
-        progress.update("ig_automation", step, "done", "Done")
-        step += 1
-
-        # ── Steps 3+: per-image captions & alt text ───────────────────────────
+        d = {**EMPTY, **load_draft(project).get("instagram", {})}
+        progress.update(ns, 0, "active", "Uploading…")
+        d["urls"] = {img.name: u for img, u in zip(images, upload_multiple(images))}
+        progress.update(ns, 0, "done", f"{len(images)} uploaded")
+        progress.update(ns, 1, "active", "Gemini…")
+        d["title"] = generate_title_text("instagram", project.name, notes)
+        progress.update(ns, 1, "done", "Done")
+        progress.update(ns, 2, "active", "Gemini…")
+        d["footer"] = generate_footer_text("instagram", project.name, notes)
+        progress.update(ns, 2, "done", "Done")
         for i, img in enumerate(images):
-            progress.update("ig_automation", step, "active", f"Analysing {img.name}…")
-            image_texts[img.name] = generate_image_text(
-                "instagram", project_name, img, i, len(images), notes
-            )
-            alt_texts[img.name] = generate_alt_text(img)
-            progress.update("ig_automation", step, "done", "Done")
-            step += 1
-
-        progress.finish("ig_automation", {
-            "success":     True,
-            "urls":        urls,
-            "title":       title,
-            "footer":      footer,
-            "image_texts": image_texts,
-            "alt_texts":   alt_texts,
-        })
-
+            progress.update(ns, 3 + i, "active", "Analysing…")
+            d["texts"][img.name] = generate_image_text("instagram", project.name, img,
+                                                      i, len(images), notes)
+            d["alts"][img.name] = generate_alt_text(img)
+            progress.update(ns, 3 + i, "done", "Done")
+        data = load_draft(project)
+        data["instagram"] = d
+        save_draft(project, data)            # persisted even if nobody is watching
+        progress.finish(ns, {"success": True})
     except Exception:
-        progress.fail("ig_automation", traceback.format_exc())
+        progress.fail(ns, traceback.format_exc())
 
 
-# ── Main UI ────────────────────────────────────────────────────────────────────
+def _publish_job(project: Path, urls: list[str], caption: str, alts: list[str]):
+    r = publish_to_instagram(urls, caption, alt_texts=alts)
+    if r.get("success"):
+        archive_project("instagram", project)
+
+
+def _on_automation_done(result: dict):
+    st.session_state.ig_automating = False
+    if result.get("success"):
+        _open(st.session_state.ig_project)
+        st.session_state.ig_toast = "✅ AI copy ready — review and publish."
+    else:
+        st.session_state.ig_error = f"Automation failed: {result.get('error', '')[-500:]}"
+
+
+def _on_publish_done(result: dict):
+    st.session_state.ig_publishing = False
+    if result.get("success"):
+        st.session_state.ig_toast = f"✅ Published to Instagram (post {result.get('post_id')})"
+        _close()
+    else:
+        st.session_state.ig_error = f"Publish failed: {result.get('error')}"
+
+
+# ── Page ──────────────────────────────────────────────────────────────────────
 
 def render_instagram_ui():
     _init()
-    st.header("📸 Instagram Publisher")
+    if st.session_state.ig_toast:
+        st.toast(st.session_state.ig_toast)
+        st.session_state.ig_toast = ""
+    if st.session_state.ig_error:
+        e1, e2 = st.columns([10, 1])
+        e1.error(st.session_state.ig_error)
+        if e2.button("✕", key="ig_err_x"):
+            st.session_state.ig_error = ""
+            st.rerun()
 
-    # ── Drain queue ───────────────────────────────────────────────────────────
-    while True:
-        new_path = fq_pop_one("instagram")
-        if not new_path: break
-        if str(new_path) not in [str(p) for p in st.session_state.ig_queue]:
-            st.session_state.ig_queue.append(new_path)
-
-    if not st.session_state.ig_project and st.session_state.ig_queue:
-        st.session_state.ig_project = st.session_state.ig_queue.pop(0)
-        _set_status(f"✅ Loaded from queue: **{st.session_state.ig_project.name}**", "info")
-        st.rerun()
-
-    if st.session_state.ig_queue:
-        with st.sidebar:
-            st.divider()
-            st.info(f"📁 **{len(st.session_state.ig_queue)}** more projects pending.")
-            for i, p in enumerate(st.session_state.ig_queue[:5]):
-                st.caption(f"{i+1}. {p.name}")
-
-    # ── Automation in progress (background thread) ────────────────────────────
-    # All blocking Cloudinary + AI work runs in a daemon thread.
-    # The script runner returns in milliseconds on every autorefresh tick
-    # (it just reads the progress file and renders HTML) — this eliminates
-    # the re-entrant BufferedWriter crash caused by Streamlit internally
-    # calling threading.interrupt_main() to interrupt a blocked script runner.
     if st.session_state.ig_automating:
-        st.subheader("🤖 Running Automation…")
-        prog_placeholder = st.empty()
-        result = render_progress("ig_automation", prog_placeholder)
-
-        if result is not None:
-            # Thread finished — populate session state from results
-            if result.get("success"):
-                project = st.session_state.ig_project
-                images  = _images(project) if project else []
-
-                urls        = result.get("urls", {})
-                image_texts = result.get("image_texts", {})
-                alt_texts   = result.get("alt_texts", {})
-                title       = result.get("title", "")
-                footer      = result.get("footer", "")
-
-                st.session_state.ig_urls.update(urls)
-                st.session_state.ig_image_texts.update(image_texts)
-                st.session_state.ig_alt_texts.update(alt_texts)
-                st.session_state.ig_title  = title
-                st.session_state.ig_footer = footer
-
-                # Seed the individual widget keys so text areas/inputs show values
-                st.session_state["ig_title_ed_2"]  = title
-                st.session_state["ig_footer_ed_2"] = footer
-                for j, img in enumerate(images):
-                    st.session_state[f"ig_url_w_2_{j}"] = urls.get(img.name, "")
-                    st.session_state[f"ig_cap_w_2_{j}"] = image_texts.get(img.name, "")
-                    st.session_state[f"ig_alt_w_2_{j}"] = alt_texts.get(img.name, "")
-
-                st.session_state.ig_automating = False
-                _set_status("✅ Automation complete! Review and publish when ready.", "success")
-
-            else:
-                err = result.get("error", "Unknown error")
-                st.session_state.ig_automating = False
-                _set_status(f"❌ Automation failed: {err}", "error")
-
-            st.rerun()
-
+        live_progress("ig_automation", "🤖 Uploading & writing copy…", _on_automation_done)
         st.stop()
-
-    # ── Publishing in progress (background thread) ────────────────────────────
     if st.session_state.ig_publishing:
-        st.subheader("🚀 Publishing to Instagram…")
-        prog_placeholder = st.empty()
-        result = render_progress("ig", prog_placeholder)
-        if result is not None:
-            if result.get("success"):
-                _set_status(f"✅ Published! ID: `{result.get('post_id')}`", "success")
-                _clear()
-            else:
-                _set_status(f"❌ Failed: {result.get('error')}", "error")
-            st.rerun()
+        live_progress("ig", "🚀 Publishing to Instagram…", _on_publish_done)
         st.stop()
-
-    # ── Status banner ─────────────────────────────────────────────────────────
-    if st.session_state.ig_status:
-        getattr(st, st.session_state.ig_status_type)(st.session_state.ig_status)
-
-    # ── No project loaded ─────────────────────────────────────────────────────
-    if not st.session_state.ig_project:
-        st.markdown("### ⏳ Waiting for a project…")
-        render_folder_picker("instagram")
-        return
 
     project = st.session_state.ig_project
-    images  = _images(project)
-
-    if not images:
-        st.error("No images found.")
-        if st.button("Clear"): _clear(); st.rerun()
+    if not project or not Path(project).exists():
+        picked = render_project_picker("instagram")
+        if picked:
+            _open(picked)
+            st.rerun()
         return
 
-    st.subheader(f"`{project.name}`")
-    notes = st.text_input(
-        "🗒️ AI context:", key="ig_notes_field_2",
-        placeholder="e.g. minimal architecture"
-    )
+    project = Path(project)
+    images = media_files(project, "instagram")
+    d = st.session_state.ig_d
+    h1, h2 = st.columns([5, 1])
+    h1.subheader(f"📸 {project.name} — {len(images)} image(s)")
+    if h2.button("← Projects", key="ig_back", width="stretch"):
+        _close()
+        st.rerun()
+    if not images:
+        st.error("No images in this folder.")
+        return
+    if len(images) > 10:
+        st.warning(f"Instagram carousels allow 10 images — this folder has {len(images)}.")
 
-    # ── Automate Everything button ────────────────────────────────────────────
-    # Clicking starts a background thread and returns IMMEDIATELY.
-    # No blocking work happens in the script runner — eliminates the crash.
-    if st.button("🤖 Automate Everything (Upload + AI Copy)", type="primary", width="stretch"):
-        notes_val = st.session_state.get("ig_notes_field_2", "")
-        imgs_snapshot = list(images)  # capture list now, before any rerun
-
-        def _worker():
-            _run_automation(imgs_snapshot, project.name, notes_val)
-
-        start_publish_thread(fn=_worker, platform="ig_automation")
+    notes = st.text_input("🗒️ AI context", key="ig_notes", placeholder="e.g. minimal architecture")
+    if st.button("🤖 Automate (upload + AI copy)", type="primary", width="stretch"):
         st.session_state.ig_automating = True
+        start_publish_thread(fn=lambda: _run_automation(project, list(images), notes),
+                             platform="ig_automation")
         st.rerun()
 
-    st.divider()
+    d["title"] = st.text_area("Hook", key=_seed("igw_title", d["title"]))
+    for i, img in enumerate(images):
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.image(Image.open(img), width="stretch")
+        with c2:
+            st.markdown(f"**Slide {i + 1}** · `{img.name}`")
+            d["texts"][img.name] = st.text_area(
+                "Caption", key=_seed(f"igw_cap_{i}", d["texts"].get(img.name, "")), height=90)
+            d["alts"][img.name] = st.text_input(
+                "Alt text", key=_seed(f"igw_alt_{i}", d["alts"].get(img.name, "")))
+    d["footer"] = st.text_area("Hashtags", key=_seed("igw_footer", d["footer"]))
 
-    # ── Edit content details ──────────────────────────────────────────────────
-    with st.expander("📝 Edit Content Details", expanded=True):
-        st.session_state.ig_title = st.text_area(
-            "Hook", value=st.session_state.ig_title, key="ig_title_ed_2"
-        )
+    with st.expander("Advanced: image URLs (filled automatically by Automate)"):
         for i, img in enumerate(images):
-            st.markdown(f"**Slide {i+1}** — `{img.name}`")
-            col_p, col_e = st.columns([1, 2])
-            with col_p:
-                st.image(Image.open(img), width="stretch")
-                st.session_state.ig_urls[img.name] = st.text_input(
-                    f"URL {i+1}",
-                    value=st.session_state.ig_urls.get(img.name, ""),
-                    key=f"ig_url_w_2_{i}"
-                )
-            with col_e:
-                st.session_state.ig_image_texts[img.name] = st.text_area(
-                    f"Cap {i+1}",
-                    value=st.session_state.ig_image_texts.get(img.name, ""),
-                    key=f"ig_cap_w_2_{i}"
-                )
-                st.session_state.ig_alt_texts[img.name] = st.text_area(
-                    f"Alt {i+1}",
-                    value=st.session_state.ig_alt_texts.get(img.name, ""),
-                    key=f"ig_alt_w_2_{i}"
-                )
-        st.session_state.ig_footer = st.text_area(
-            "Hashtags", value=st.session_state.ig_footer, key="ig_footer_ed_2"
-        )
+            d["urls"][img.name] = st.text_input(
+                img.name, key=_seed(f"igw_url_{i}", d["urls"].get(img.name, "")))
+    _save()
 
-    # ── Final review + publish ────────────────────────────────────────────────
-    st.markdown("### 🔍 Final Review")
-    final_cap = _assemble_caption(
-        st.session_state.ig_title,
-        st.session_state.ig_image_texts,
-        st.session_state.ig_footer,
-        images,
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.info("**Caption Preview**")
-        if final_cap.strip(): st.text(final_cap)
-        else: st.warning("(Empty)")
-    with c2:
-        st.info("**Media Status**")
-        all_ok, u_list = True, []
-        for i, img in enumerate(images):
-            u = st.session_state.ig_urls.get(img.name, "").strip()
-            u_list.append(u)
-            if u.startswith("http"): st.write(f"✅ Img {i+1}: Ready")
-            else: st.write(f"❌ Img {i+1}: Missing URL"); all_ok = False
+    caption = "\n\n".join(x for x in [d["title"].strip()]
+                          + [d["texts"].get(img.name, "").strip() for img in images]
+                          + [d["footer"].strip()] if x)
+    urls = [d["urls"].get(img.name, "").strip() for img in images]
+    missing = sum(1 for u in urls if not u.startswith("http"))
 
     st.divider()
-    cap_len    = len(final_cap)
-    over_limit = cap_len > CHAR_LIMIT
-    can_pub    = all_ok and final_cap.strip() and not over_limit
-
-    cp, cc = st.columns([2, 1])
-    with cp:
-        if st.button("🚀 APPROVE & PUBLISH LIVE", type="primary", width="stretch", disabled=not can_pub):
-            save_entry("instagram", project.name, final_cap, u_list)
-            alts = [st.session_state.ig_alt_texts.get(img.name, "") for img in images]
-            start_publish_thread(
-                fn=lambda: publish_to_instagram(u_list, final_cap, alt_texts=alts),
-                platform="ig",
-            )
-            st.rerun()
-        if not all_ok:
-            st.warning("⚠️ All image URLs must be filled before publishing.")
-        elif not final_cap.strip():
-            st.warning("⚠️ Caption is empty — add a hook, slide text, or hashtags.")
-        elif over_limit:
-            st.warning(
-                f"⚠️ Caption is too long: {cap_len:,} / {CHAR_LIMIT:,} characters. "
-                "Shorten the text to enable publishing."
-            )
-    with cc:
-        if st.button("🗑️ Clear Project", width="stretch"): _clear(); st.rerun()
+    with st.expander(f"🔍 Caption preview ({len(caption):,}/{CHAR_LIMIT:,})", expanded=True):
+        st.text(caption or "(empty)")
+    problems = ([f"{missing} image(s) not uploaded yet — run Automate"] if missing else []) \
+        + (["Caption is empty"] if not caption else []) \
+        + ([f"Caption too long ({len(caption):,}/{CHAR_LIMIT:,})"] if len(caption) > CHAR_LIMIT else []) \
+        + (["Max 10 images"] if len(images) > 10 else [])
+    for p in problems:
+        st.caption(f"⚠️ {p}")
+    if st.button("🚀 APPROVE & PUBLISH", type="primary", width="stretch",
+                 disabled=bool(problems)):
+        save_entry("instagram", project.name, caption, urls)
+        alts = [d["alts"].get(img.name, "") for img in images]
+        st.session_state.ig_publishing = True
+        start_publish_thread(fn=lambda: _publish_job(project, urls, caption, alts),
+                             platform="ig")
+        st.rerun()

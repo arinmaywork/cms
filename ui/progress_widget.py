@@ -85,9 +85,9 @@ def start_publish_thread(fn: Callable, platform: str) -> None:
     written a sentinel "Launching..." step so the UI guard works correctly.
     """
     # Only clear if there are stale completed steps from a previous run
-    state = progress.read(platform)
-    if not state.get("active", False):
-        progress.clear(platform)
+    # Sentinel step BEFORE the thread starts: otherwise the UI can poll an
+    # empty, inactive state first and wrongly conclude the job already ended.
+    progress.start(platform, ["Starting…"])
     key = f"{platform}_publishing"
     st.session_state[key] = True
 
@@ -128,3 +128,15 @@ def render_progress(platform: str, placeholder: Any) -> dict | None:
     if state.get("error"):
         return {"success": False, "error": state["error"]}
     return state.get("result") or {"success": False, "error": "No result returned"}
+
+
+@st.fragment(run_every=2)
+def live_progress(ns: str, title: str, on_done: Callable[[dict], None]) -> None:
+    """Self-refreshing progress panel. Only THIS fragment reruns every 2 s —
+    not the whole app — and when the job finishes it hands the result to
+    on_done() and triggers one full rerun."""
+    st.subheader(title)
+    result = render_progress(ns, st.empty())
+    if result is not None:
+        on_done(result)
+        st.rerun()

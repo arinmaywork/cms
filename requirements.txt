@@ -1,12 +1,8 @@
 # ── Core UI ───────────────────────────────────────────────────────────────────
-streamlit>=1.35.0,<2.0.0
-streamlit-autorefresh>=1.0.1
+streamlit>=1.42.0,<2.0.0   # fragments, segmented_control, dataframe selection
 
 # ── Terminal colours in launcher ──────────────────────────────────────────────
 colorama>=0.4.6
-
-# ── File system watcher ───────────────────────────────────────────────────────
-watchdog>=4.0.0
 
 # ── AI — Google Gemini (replaces Anthropic) ───────────────────────────────────
 # Free tier: https://aistudio.google.com/apikey

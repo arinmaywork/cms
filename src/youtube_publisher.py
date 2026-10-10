@@ -97,7 +97,9 @@ def sanitize_metadata(title: str, description: str, tags: list[str]) -> dict[str
 def find_videos(folder: Path) -> list[Path]:
     from src.natsort import natkey
     try:
-        return sorted((f for f in folder.iterdir() if f.suffix.lower() in VIDEO_EXTS),
+        # skip dotfiles — macOS copies '._name.mp4' resource forks to Linux
+        return sorted((f for f in folder.iterdir() if f.suffix.lower() in VIDEO_EXTS
+                       and not f.name.startswith(".")),
                       key=lambda f: natkey(f.name))
     except OSError:
         return []
@@ -106,7 +108,8 @@ def find_videos(folder: Path) -> list[Path]:
 def find_thumbnails(folder: Path) -> list[Path]:
     from src.natsort import natkey
     try:
-        return sorted((f for f in folder.iterdir() if f.suffix.lower() in THUMB_EXTS),
+        return sorted((f for f in folder.iterdir() if f.suffix.lower() in THUMB_EXTS
+                       and not f.name.startswith("._")),
                       key=lambda f: natkey(f.name))
     except OSError:
         return []
@@ -117,6 +120,7 @@ def find_thumbnails(folder: Path) -> list[Path]:
 # the batch worker (src/youtube_batch.py) can classify reliably. Never shown
 # to users — the batch strips it.
 LIMIT_MARKER = "[[LIMIT]]"
+AUTH_MARKER  = "[[AUTH]]"   # login expired/revoked → queue pauses, no retries burned
 
 
 def _error_reasons(exc: Exception) -> list[str]:
@@ -171,8 +175,11 @@ def _friendly_api_error(exc: Exception) -> str:
     if "youtubesignuprequired" in reasons or "youtubeSignupRequired" in s:
         return ("This Google account has no YouTube channel. Open youtube.com "
                 "once with this account and create the channel, then retry.")
-    if "authError" in s or "invalid credentials" in sl or "invalid_grant" in sl:
-        return "YouTube session expired — click 'Connect YouTube account' again."
+    if ("autherror" in sl or "invalid credentials" in sl or "invalid_grant" in sl
+            or "not signed in" in sl or "token has been expired or revoked" in sl
+            or "invalidcredentials" in reasons or "unauthorized" in sl):
+        return (f"{AUTH_MARKER} YouTube login expired — open ⚙️ Settings → "
+                "Connect YouTube account, then Resume the queue.")
     if reasons:
         return f"{s} [reason: {','.join(reasons)}]"
     return s
@@ -191,6 +198,28 @@ def _is_retryable_http(exc: Exception) -> bool:
 
 
 # ── Playlists ─────────────────────────────────────────────────────────────────
+
+def find_recent_upload(title: str, limit: int = 15) -> str | None:
+    """Return the URL of a recent channel upload with exactly this title, or None.
+    Used before re-uploading an item that was mid-upload when the process died
+    (YouTube may have accepted it before we saved the ID). ~2 quota units."""
+    want = sanitize_metadata(title, "", [])["title"].strip().lower()
+    yt = get_service()
+    ch = yt.channels().list(part="contentDetails", mine=True).execute()
+    quota.record("channels.list")
+    items = ch.get("items", [])
+    if not items:
+        return None
+    uploads = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    resp = yt.playlistItems().list(part="snippet", playlistId=uploads,
+                                   maxResults=limit).execute()
+    quota.record("playlists.list")
+    for it in resp.get("items", []):
+        sn = it["snippet"]
+        if sn.get("title", "").strip().lower() == want:
+            return f"https://youtu.be/{sn['resourceId']['videoId']}"
+    return None
+
 
 def list_playlists() -> list[dict[str, str]]:
     """Return the signed-in channel's playlists [{id, title, count}]. ~1-2 units."""

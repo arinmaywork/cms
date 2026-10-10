@@ -29,6 +29,8 @@ from typing import Any
 
 import requests
 
+from src.fsutil import atomic_write_json, load_json
+
 ROOT         = Path(__file__).resolve().parent.parent
 SECRETS_DIR  = ROOT / ".secrets"
 TOKEN_FILE   = SECRETS_DIR / "youtube_token.json"
@@ -89,11 +91,7 @@ def _save_token(payload: dict[str, Any], client_id: str, client_secret: str) -> 
         "scopes":        SCOPES,
         "expiry_epoch":  time.time() + float(payload.get("expires_in", 3600)),
     }
-    TOKEN_FILE.write_text(json.dumps(info, indent=2), encoding="utf-8")
-    try:
-        os.chmod(TOKEN_FILE, 0o600)
-    except OSError:
-        pass
+    atomic_write_json(TOKEN_FILE, info, mode=0o600)
 
 
 def sign_out() -> None:
@@ -116,7 +114,9 @@ def get_credentials():
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    info = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+    info = load_json(TOKEN_FILE, None)
+    if not isinstance(info, dict):
+        return None
     creds = Credentials(
         token=info.get("token"),
         refresh_token=info.get("refresh_token"),
@@ -131,12 +131,17 @@ def get_credentials():
             creds.refresh(Request())
             info["token"]        = creds.token
             info["expiry_epoch"] = time.time() + 3500
-            TOKEN_FILE.write_text(json.dumps(info, indent=2), encoding="utf-8")
+            atomic_write_json(TOKEN_FILE, info, mode=0o600)
         except Exception as e:
             # Refresh token revoked/expired → force re-auth
             print(f"  [yt:auth] token refresh failed: {e}")
             return None
     return creds
+
+
+def is_valid() -> bool:
+    """True when a stored token exists AND still refreshes (no API quota used)."""
+    return has_token() and get_credentials() is not None
 
 
 def get_service():
@@ -154,11 +159,7 @@ def get_service():
 # ── Device flow ───────────────────────────────────────────────────────────────
 
 def _write_auth_status(status: str, **extra) -> None:
-    AUTH_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    AUTH_STATUS_FILE.write_text(
-        json.dumps({"status": status, "ts": time.time(), **extra}),
-        encoding="utf-8",
-    )
+    atomic_write_json(AUTH_STATUS_FILE, {"status": status, "ts": time.time(), **extra})
 
 
 def read_auth_status() -> dict[str, Any]:

@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.fsutil import atomic_write_json, load_json
+
 BASE_DIR    = Path(__file__).resolve().parent.parent
 HISTORY_DIR = BASE_DIR / "history"
 
@@ -30,21 +32,12 @@ _locks: dict[str, threading.Lock] = {
 # ── Internals ─────────────────────────────────────────────────────────────────
 def _load(platform: str) -> list[dict[str, Any]]:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    path = _FILES[platform]
-    if not path.exists():
-        path.write_text("[]", encoding="utf-8")
-        return []
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
+    data = load_json(_FILES[platform], [])
+    return data if isinstance(data, list) else []
 
 
 def _save(platform: str, data: list[dict[str, Any]]) -> None:
-    _FILES[platform].write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(_FILES[platform], data)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

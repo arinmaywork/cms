@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.fsutil import atomic_write_json, load_json
+
 ROOT        = Path(__file__).resolve().parent.parent
 _QUOTA_FILE = ROOT / ".queue" / "youtube_quota.json"
 _lock       = threading.Lock()
@@ -79,20 +81,14 @@ def _empty() -> dict[str, Any]:
 
 
 def _load() -> dict[str, Any]:
-    if not _QUOTA_FILE.exists():
-        return _empty()
-    try:
-        data = json.loads(_QUOTA_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return _empty()
-    if data.get("date") != _today_pacific():        # new Pacific day → reset
+    data = load_json(_QUOTA_FILE, None)
+    if not isinstance(data, dict) or data.get("date") != _today_pacific():        # new Pacific day → reset
         return _empty()
     return data
 
 
 def _save(data: dict[str, Any]) -> None:
-    _QUOTA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _QUOTA_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_write_json(_QUOTA_FILE, data)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

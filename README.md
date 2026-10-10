@@ -17,37 +17,28 @@ A local-first content management system that automates publishing to **Instagram
 
 ---
 
-## Architecture
+## Architecture (v2)
 
 ```
-launch.py               ← single entry point (run this; --headless for VMs)
-  ├── src/watcher.py    ← watchdog observer on input_instagram|behance|youtube/
-  │     └── src/file_queue.py  ← JSON-file IPC queue between watcher and Streamlit
-  └── app.py (subprocess)      ← Streamlit UI (+ optional password gate)
-        ├── ui/instagram_ui.py
-        │     ├── src/uploader.py             ← Cloudinary upload
-        │     ├── src/ai_generator.py         ← Gemini vision + text
-        │     ├── src/instagram_publisher.py  ← Instagram Graph API v25.0
-        │     └── src/instagram_token.py      ← weekly token auto-refresh → .env
-        ├── ui/behance_ui.py
-        │     └── src/behance_publisher.py    ← Playwright headless automation
-        ├── ui/youtube_ui.py
-        │     ├── src/youtube_auth.py         ← OAuth device flow (works on VMs)
-        │     ├── src/youtube_publisher.py    ← resumable uploads, playlists, thumbnails
-        │     └── src/youtube_quota.py        ← quota + upload-cap tracking (PT reset)
-        ├── ui/progress_widget.py   ← background thread + live progress rendering
-        └── src/history_manager.py  ← JSON history per platform
+launch.py  ── always-on process ───────────────────────────────────────────
+  ├─ src/upload_server.py   resumable chunked uploads  (port 8502)
+  ├─ services loop          YouTube queue supervisor (30 s) + IG token refresh
+  └─ streamlit run app.py   UI subprocess (own session)  (port 8501)
+        ├─ ui/youtube_ui.py · ui/instagram_ui.py · ui/behance_ui.py
+        ├─ ui/settings_ui.py     connections, quota, history, logs
+        └─ ui/folder_picker.py   project grid read straight from input_*/
+src/projects.py      input folders = source of truth · drafts (.cms.json) · archive/
+src/fsutil.py        atomic writes; corrupt files preserved, never overwritten
+src/youtube_batch.py persistent adaptive queue; one worker across processes (flock)
 ```
 
-### IPC design
+Key behaviours:
 
-`launch.py` (watcher process) and `app.py` (Streamlit subprocess) communicate through JSON files in `.queue/` with companion `.lock` files for atomic cross-process access. Progress state is **namespaced per pipeline** (`progress_ig.json`, `progress_behance.json`, `progress_yt.json`, …) so long YouTube uploads and Instagram posts can run concurrently.
-
-### Background thread pattern
-
-All blocking work (uploads, Gemini calls, Playwright) runs in daemon threads spawned by `start_publish_thread()`. The Streamlit script runner only reads progress JSON on each autorefresh tick — this avoids the Python 3.13 re-entrant stdout crash.
-
----
+- **No consumable queue.** Projects are listed from `input_<platform>/` on every render; a refresh or a second user never loses one. Published projects move to `archive/<platform>/` so they can't be published twice.
+- **Drafts persist** in `<project>/.cms.json` — AI text and your edits survive refreshes, restarts and crashes. YouTube AI writes each video's result as it finishes and never overwrites your edits.
+- **Resumable uploads** (`⬆️ Upload files` button → port 8502): 8 MB chunks straight to disk, automatic retry on network drops, resume after closing the tab (re-select the same files), finished files skipped.
+- **Lightweight UI**: only the active page renders; live parts (progress, queue, sign-in) refresh themselves via `st.fragment` — no whole-app autorefresh.
+- **Queue safety**: limit errors park until midnight PT, login errors pause immediately (resume on reconnect), a crash mid-upload checks the channel before re-uploading.
 
 ## Setup
 
@@ -111,13 +102,13 @@ python launch.py --headless       # server/VM mode (also auto-detected under sys
 ```
 
 ### Instagram
-Drop an image folder into `input_instagram/` → **🤖 Automate Everything** → review hook/captions/hashtags/alt-text → **🚀 APPROVE & PUBLISH LIVE**.
+Upload (⬆️ button) or SFTP an image folder into `input_instagram/`, open it → **🤖 Automate Everything** → review hook/captions/hashtags/alt-text → **🚀 APPROVE & PUBLISH LIVE**.
 
 ### Behance
-Drop an image folder into `input_behance/` → AI-generate or write the sections → **🚀 Approve & Publish**.
+Upload or SFTP an image folder into `input_behance/`, open it → AI-generate or write the sections → **🚀 Approve & Publish**.
 
 ### YouTube
-Drop a folder with video file(s) (optionally + a `.jpg`/`.png` thumbnail) into `input_youtube/` →
+Upload or SFTP a folder of videos (optionally + `.jpg`/`.png` thumbnails) into `input_youtube/`, open it →
 **🤖 Automate Everything** (Gemini watches sampled frames, writes title/description/tags) →
 choose **visibility** (unlisted default / public / private), **schedule** (optional), **playlist** (pick existing or type a new name), **category**, **made-for-kids** →
 **🚀 APPROVE & UPLOAD**. The sidebar shows remaining API quota and today's upload count; batches that would exceed either limit are blocked up-front with the reset countdown (midnight Pacific).

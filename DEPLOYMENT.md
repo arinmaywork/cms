@@ -113,3 +113,19 @@ Caddy gets a Let's Encrypt certificate automatically. Then open the Oracle-side 
 - The Instagram token auto-refreshes weekly and is written back to `.env` — no more 60-day expiry surprises.
 - The YouTube device-code login works from the VM exactly like locally: the sidebar shows a code, you approve it on your phone.
 - Timezone: quota resets are midnight **Pacific**; the sidebar shows the countdown so you don't have to think about it.
+
+## 7. v2 network settings
+
+The launcher serves two ports: **8501** (UI) and **8502** (resumable upload service).
+
+In `.env` on the VM:
+```env
+APP_PASSWORD=<long random>          # protects BOTH the UI and the upload service
+CMS_BIND_ADDRESS=100.104.140.67     # listen only on Tailscale, never the public IP
+CMS_UPLOAD_PORT=8502
+```
+If `http://100.104.140.67:8502` doesn't load but 8501 does:
+`sudo iptables -I INPUT -i tailscale0 -j ACCEPT && sudo netfilter-persistent save`.
+
+With a Caddy/HTTPS domain instead of Tailscale, proxy the uploader too
+(e.g. `upload.yourdomain.com { reverse_proxy localhost:8502 }`).
