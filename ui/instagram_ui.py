@@ -98,16 +98,20 @@ def _run_automation(project: Path, images: list[Path], notes: str, cfg: dict) ->
         _upload_framed(project, images, cfg, d)
         progress.update(ns, 0, "done", f"{len(images)} uploaded")
         progress.update(ns, 1, "active", "Gemini…")
-        d["title"] = generate_title_text("instagram", project.name, notes)
+        if not d["title"].strip():          # never overwrite what you typed
+            d["title"] = generate_title_text("instagram", project.name, notes)
         progress.update(ns, 1, "done", "Done")
         progress.update(ns, 2, "active", "Gemini…")
-        d["footer"] = generate_footer_text("instagram", project.name, notes)
+        if not d["footer"].strip():
+            d["footer"] = generate_footer_text("instagram", project.name, notes)
         progress.update(ns, 2, "done", "Done")
         for i, img in enumerate(images):
             progress.update(ns, 3 + i, "active", "Analysing…")
-            d["texts"][img.name] = generate_image_text("instagram", project.name, img,
-                                                      i, len(images), notes)
-            d["alts"][img.name] = generate_alt_text(img)
+            if not d["texts"].get(img.name, "").strip():
+                d["texts"][img.name] = generate_image_text("instagram", project.name, img,
+                                                          i, len(images), notes)
+            if not d["alts"].get(img.name, "").strip():
+                d["alts"][img.name] = generate_alt_text(img)
             progress.update(ns, 3 + i, "done", "Done")
         data = load_draft(project)
         data["instagram"] = d
@@ -149,7 +153,7 @@ def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
             st.caption(f"All {len(images)} slide(s) → {r:.2f}:1 at 1440 px wide"
                        + (" (Instagram shows every carousel slide at the first slide's ratio)"
                           if len(images) > 1 else ""))
-            cols = st.columns(min(4, len(images)))
+            cols = st.columns(4)   # fixed width → sharp previews
             for i, img in enumerate(images[:8]):
                 cols[i % len(cols)].image(_preview(str(img), img.stat().st_mtime, r, color,
                                                    margin, gs), width="stretch")
@@ -230,7 +234,16 @@ def render_instagram_ui():
 
     cfg = _frame_ui(project, images, d)
     notes = st.text_input("🗒️ AI context", key="ig_notes", placeholder="e.g. minimal architecture")
-    if st.button("🤖 Automate (upload + AI copy)", type="primary", width="stretch"):
+    b1, b2 = st.columns(2)
+    if b2.button("☁️ Upload images only (no AI)", width="stretch"):
+        _save()
+        st.session_state.ig_automating = True
+        start_publish_thread(fn=lambda: _run_upload_only(project, list(images), cfg),
+                             platform="ig_automation")
+        st.rerun()
+    if b1.button("🤖 Automate (upload + AI fills empty fields)", type="primary",
+                 width="stretch"):
+        _save()
         st.session_state.ig_automating = True
         start_publish_thread(fn=lambda: _run_automation(project, list(images), notes, cfg),
                              platform="ig_automation")
@@ -264,7 +277,7 @@ def render_instagram_ui():
     st.divider()
     with st.expander(f"🔍 Caption preview ({len(caption):,}/{CHAR_LIMIT:,})", expanded=True):
         st.text(caption or "(empty)")
-    problems = ([f"{missing} image(s) not uploaded yet — run Automate"] if missing else []) \
+    problems = ([f"{missing} image(s) not uploaded yet — click Upload images only (or Automate)"] if missing else []) \
         + (["Caption is empty"] if not caption else []) \
         + ([f"Caption too long ({len(caption):,}/{CHAR_LIMIT:,})"] if len(caption) > CHAR_LIMIT else []) \
         + (["Max 10 images"] if len(images) > 10 else [])

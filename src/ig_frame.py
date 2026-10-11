@@ -15,7 +15,7 @@ import io
 import json
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from src.fsutil import atomic_write_json, load_json
 
@@ -68,16 +68,19 @@ def frame_image(img: Image.Image, ratio: float, color: str, margin_pct: float,
     s = min((aw - 2 * m) / img.width, (ah - 2 * m) / img.height)
     nw, nh = max(1, round(img.width * s)), max(1, round(img.height * s))
     canvas = Image.new("RGB", (W, H), color)
-    canvas.paste(img.resize((nw, nh), Image.LANCZOS), ((W - nw) // 2, (H - nh) // 2))
+    photo = img.resize((nw, nh), Image.LANCZOS)
+    if s < 1:   # light output sharpening after downscale (offsets IG recompression)
+        photo = photo.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=2))
+    canvas.paste(photo, ((W - nw) // 2, (H - nh) // 2))
     return canvas
 
 
 def preview_jpeg(path: Path, ratio: float, color: str, margin: float,
                  grid_safe: bool = False) -> bytes:
     img, _ = _open(path)
-    img.thumbnail((800, 800))
+    img.thumbnail((1600, 1600))
     buf = io.BytesIO()
-    frame_image(img, ratio, color, margin, width=400, grid_safe=grid_safe).save(buf, "JPEG", quality=85)
+    frame_image(img, ratio, color, margin, width=720, grid_safe=grid_safe).save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
 
