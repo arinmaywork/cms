@@ -123,6 +123,31 @@ def _youtube_section() -> None:
 
 # ── Instagram / Behance ───────────────────────────────────────────────────────
 
+def _gemini_section() -> None:
+    st.subheader("🤖 Gemini (AI copy)")
+    from src import ai_generator as ai
+    if os.getenv("GEMINI_API_KEY"):
+        st.success("Key set · models: " + ", ".join(ai._models()[:3]))
+    else:
+        st.error("No Gemini API key")
+    with st.expander("🔑 Paste a new Gemini key", expanded=not os.getenv("GEMINI_API_KEY")):
+        st.link_button("Get a key (Google AI Studio) ↗", "https://aistudio.google.com/apikey")
+        with st.form("gem_key_form", clear_on_submit=True):
+            key = st.text_input("API key (starts with AIza…)", type="password")
+            if st.form_submit_button("Verify & save", type="primary") and key:
+                try:
+                    from google import genai
+                    next(iter(genai.Client(api_key=key.strip()).models.list()))
+                except Exception as e:
+                    st.error(f"Google rejected the key: {str(e)[:200]}")
+                else:
+                    from src.instagram_token import _set_env
+                    _set_env("GEMINI_API_KEY", key.strip())
+                    ai.reset_client()
+                    st.toast("Gemini key saved ✓")
+                    st.rerun()
+
+
 def _instagram_section() -> None:
     st.subheader("📸 Instagram")
     s = ig_status()
@@ -220,6 +245,7 @@ def render_settings_ui() -> None:
     with c1:
         _youtube_section()
         _instagram_section()
+        _gemini_section()
     with c2:
         _behance_section()
 

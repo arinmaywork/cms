@@ -13,6 +13,7 @@ Cascade tries best→fallback automatically on 429/quota errors.
 """
 
 import os
+import re
 import time
 import mimetypes
 from pathlib import Path
@@ -20,12 +21,49 @@ from src.history_manager import get_last_n
 
 # ── Model cascade: ordered best → most available ──────────────────────────────
 # gemini-2.0-flash has the most generous free quota and supports vision
-MODEL_CASCADE: list[str] = [
-    "gemini-2.0-flash",         # best free quota, full vision support
-    "gemini-1.5-flash",         # high daily limit, reliable
-    "gemini-2.5-flash-lite",    # 10 RPM free
-    "gemini-2.5-flash",         # only 20/day — last resort
-]
+# Models are DISCOVERED from the API (newest Flash first) and cached 6 h, so a
+# retired model (404 "no longer available") never breaks the app again.
+# Override with GEMINI_MODELS=model-a,model-b in .env if you want a fixed list.
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+_models_cache: dict = {"ts": 0.0, "list": []}
+
+
+def _version(name: str) -> float:
+    m = re.search(r"(\d+(?:\.\d+)?)", name)
+    return float(m.group(1)) if m else 0.0
+
+
+def _models() -> list[str]:
+    env = os.getenv("GEMINI_MODELS", "").strip()
+    if env:
+        return [m.strip() for m in env.split(",") if m.strip()]
+    if _models_cache["list"] and time.time() - _models_cache["ts"] < 21600:
+        return _models_cache["list"]
+    try:
+        names = []
+        for m in _get_client().models.list():
+            n = m.name.split("/")[-1]
+            actions = getattr(m, "supported_actions", None) or []
+            if "flash" in n and "generateContent" in actions and not any(
+                    x in n for x in ("tts", "image", "live", "audio", "embed", "native")):
+                names.append(n)
+        stable = [n for n in names if not any(x in n for x in ("preview", "exp"))] or names
+        stable.sort(key=lambda n: (-_version(n), "lite" in n, len(n)))
+        if stable:
+            _models_cache.update(ts=time.time(), list=stable[:5])
+            print(f"  [ai] models discovered: {', '.join(stable[:5])}")
+            return _models_cache["list"]
+    except Exception as e:
+        print(f"  [ai] model discovery failed ({e}) — using fallback list")
+    return FALLBACK_MODELS
+
+
+def reset_client() -> None:
+    """Call after the API key changes (Settings page)."""
+    global _client
+    _client = None
+    _models_cache.update(ts=0.0, list=[])
+
 
 _client = None
 
@@ -101,6 +139,9 @@ def _history(platform: str) -> str:
 # ── Retryable error detection ─────────────────────────────────────────────────
 def _is_retryable(exc: Exception) -> bool:
     msg = str(exc).lower()
+    if any(k in msg for k in ("404", "not_found", "not found", "no longer available")):
+        _models_cache["ts"] = 0.0          # model retired → rediscover next time
+        return True
     return any(k in msg for k in [
         "429", "quota", "rate", "resource_exhausted",
         "503", "overloaded", "unavailable", "retry",
@@ -115,7 +156,7 @@ def _call_text(system: str, prompt: str, max_tokens: int = 2048) -> tuple[str, s
     client = _get_client()
     last_err = None
 
-    for model_name in MODEL_CASCADE:
+    for model_name in _models():
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -141,7 +182,7 @@ def _call_text(system: str, prompt: str, max_tokens: int = 2048) -> tuple[str, s
 
     raise RuntimeError(
         f"All models exhausted. Last error: {last_err}\n"
-        f"Tried: {', '.join(MODEL_CASCADE)}\n"
+        f"Tried: {', '.join(_models())}\n"
         "Free tier quota may be used up for today — try again tomorrow or "
         "add billing at https://aistudio.google.com"
     )
@@ -180,7 +221,7 @@ def _call_vision(system: str, prompt: str, image_path: Path,
     contents   = types.Content(parts=[image_part, text_part], role="user")
 
     last_err = None
-    for model_name in MODEL_CASCADE:
+    for model_name in _models():
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -206,7 +247,7 @@ def _call_vision(system: str, prompt: str, image_path: Path,
 
     raise RuntimeError(
         f"All vision models exhausted. Last error: {last_err}\n"
-        f"Tried: {', '.join(MODEL_CASCADE)}\n"
+        f"Tried: {', '.join(_models())}\n"
         "Free tier quota may be used up — try again tomorrow or add billing."
     )
 
@@ -401,7 +442,7 @@ Rules:
 
     last_err = None
     response = None  # initialise so the except fallback can safely reference it
-    for model_name in MODEL_CASCADE:
+    for model_name in _models():
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -617,7 +658,7 @@ Rules:
     contents = types.Content(parts=parts, role="user")
 
     last_err = None
-    for model_name in MODEL_CASCADE:
+    for model_name in _models():
         try:
             response = client.models.generate_content(
                 model=model_name,
