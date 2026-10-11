@@ -125,3 +125,40 @@ def refresh_if_due(force: bool = False) -> str:
                 print(f"  [ig:token] {m['last_status']}")
         atomic_write_json(META_FILE, m)
         return m["last_status"]
+
+
+def _set_env(key: str, value: str) -> None:
+    text = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+    if re.search(rf"^{key}=", text, flags=re.M):
+        text = re.sub(rf"^{key}=.*$", lambda _: f"{key}={value}", text, flags=re.M)
+    else:
+        text = text.rstrip("\n") + f"\n{key}={value}\n"
+    atomic_write_text(ENV_FILE, text, mode=0o600)
+    os.environ[key] = value
+
+
+def set_token(token: str) -> tuple[bool, str]:
+    """Validate a freshly generated token with Instagram, then store it (and the
+    matching user ID) in .env and reset the refresh state. Web-UI entry point."""
+    token = token.strip()
+    if not token.startswith("IG"):
+        return False, "That doesn't look like an Instagram Login token (they start with 'IG')."
+    try:
+        r = requests.get("https://graph.instagram.com/v25.0/me",
+                         params={"fields": "user_id,username"},
+                         headers={"Authorization": f"Bearer {token}"}, timeout=20).json()
+    except Exception as e:
+        return False, f"Couldn't reach Instagram: {e}"
+    if "error" in r:
+        err = r["error"]
+        return False, f"Instagram rejected the token: {err.get('message', err) if isinstance(err, dict) else err}"
+    with _lock:
+        _set_env("INSTAGRAM_ACCESS_TOKEN", token)
+        if r.get("user_id"):
+            _set_env("INSTAGRAM_USER_ID", str(r["user_id"]))
+        now = datetime.now()
+        atomic_write_json(META_FILE, {
+            "ok": True, "token_tail": token[-12:], "last_refresh": now.isoformat(),
+            "expires_at": (now + timedelta(days=60)).isoformat(),
+            "last_status": f"new token saved for @{r.get('username', '?')}"})
+    return True, f"Saved ✓ — connected as @{r.get('username', '?')}"

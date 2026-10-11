@@ -6,8 +6,7 @@ connections (Instagram / Behance / YouTube), YouTube quota, history, logs.
 """
 
 import os
-import subprocess
-import sys
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -16,7 +15,8 @@ import src.youtube_auth as yta
 import src.youtube_batch as ytb
 import src.youtube_quota as ytq
 from src.history_manager import get_last_n
-from src.instagram_token import refresh_if_due, status as ig_status
+import src.behance_login as bhl
+from src.instagram_token import refresh_if_due, set_token, status as ig_status
 
 ROOT = Path(__file__).resolve().parent.parent
 BH_STATE = ROOT / ".browser_state" / "behance_state.json"
@@ -126,37 +126,83 @@ def _youtube_section() -> None:
 def _instagram_section() -> None:
     st.subheader("📸 Instagram")
     s = ig_status()
-    if not s["configured"]:
-        st.warning("INSTAGRAM_ACCESS_TOKEN not set in .env")
-        return
-    days = f" · ~{s['days_left']} days left" if s["days_left"] is not None else ""
-    (st.success if s["ok"] else st.error)(f"Token: {s['last_status']}{days}")
-    if not s["ok"]:
-        st.caption("A revoked token (e.g. after a password change) can't be refreshed. "
-                   "Meta developer portal → your app → Instagram → API Setup → Generate "
-                   "Token → paste into `.env` → restart. Auto-refresh takes over again.")
-    if st.button("Check / refresh token now", key="ig_refresh_now"):
+    if s["configured"]:
+        days = f" · ~{s['days_left']} days left" if s["days_left"] is not None else ""
+        (st.success if s["ok"] else st.error)(f"Token: {s['last_status']}{days}")
+    else:
+        st.warning("No token yet.")
+    with st.expander("🔑 Paste a new token", expanded=not (s["configured"] and s["ok"])):
+        st.caption("Meta developer portal → your app → Instagram → API Setup → "
+                   "**Generate token** → copy it here. It's verified, saved, and then "
+                   "auto-refreshed weekly — no VM access needed.")
+        st.link_button("Open Meta developer portal ↗", "https://developers.facebook.com/apps/")
+        with st.form("ig_token_form", clear_on_submit=True):
+            tok = st.text_input("New token (starts with IGAA…)", type="password")
+            if st.form_submit_button("Verify & save", type="primary") and tok:
+                ok, msg = set_token(tok)
+                (st.toast if ok else st.error)(msg)
+    if s["configured"] and st.button("Check / refresh token now", key="ig_refresh_now"):
         with st.spinner("Contacting Instagram…"):
             st.toast(refresh_if_due(force=True))
         st.rerun()
 
 
+@st.fragment(run_every=2)
+def _behance_live() -> None:
+    s = bhl.read_status()
+    st_ = s.get("status", "")
+    msg = s.get("message", "")
+    if st_ in ("running", "testing"):
+        st.info(f"⏳ {msg}")
+    elif st_ == "need_code":
+        st.warning(f"🔢 {msg}")
+        with st.form("bh_code_form", clear_on_submit=True):
+            code = st.text_input("Verification code")
+            if st.form_submit_button("Submit code", type="primary") and code:
+                bhl.submit_code(code)
+                st.toast("Code sent to the login browser…")
+    elif st_ == "ok":
+        st.success(msg)
+    elif st_:
+        st.error(msg)
+    if bhl.SHOT.exists() and st_ and time.time() - s.get("ts", 0) < 900:
+        with st.expander("Live view of the login browser", expanded=st_ in ("need_code", "failed", "blocked")):
+            st.image(str(bhl.SHOT), width="stretch")
+    if st_ in ("ok", "failed", "blocked", "expired") and st.session_state.get("bh_watch"):
+        st.session_state.bh_watch = False
+        st.rerun()
+
+
 def _behance_section() -> None:
     st.subheader("🎨 Behance")
-    if BH_STATE.exists():
-        st.success("Session saved")
-    else:
-        st.error("No session")
-    st.caption("Behance logins need a visible browser. On the VM: log in on your Mac "
-               "(button below), then `scp .browser_state/behance_state.json` to the VM.")
-    if st.button("🔄 Behance login (opens a browser on this machine)", key="bh_login"):
-        script = ROOT / "save_behance_session.py"
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", "-a", "Terminal", str(script)])
-        else:
-            kw = {"creationflags": subprocess.CREATE_NEW_CONSOLE} if os.name == "nt" else {}
-            subprocess.Popen([sys.executable, str(script)], **kw)
-        st.toast("Complete the login in the window that opened.")
+    (st.success if BH_STATE.exists() else st.error)(
+        "Session saved" if BH_STATE.exists() else "No session — log in below")
+    running = bhl.busy()
+    c1, c2 = st.columns(2)
+    if c1.button("🧪 Test session", disabled=running or not BH_STATE.exists(), width="stretch"):
+        bhl.start_test()
+        st.session_state.bh_watch = True
+        st.rerun()
+    with st.expander("🔐 Log in from here", expanded=not BH_STATE.exists()):
+        st.caption("The server opens Behance in a headless browser and signs in with these "
+                   "details. If Adobe asks for a verification code, a box appears here.")
+        with st.form("bh_login_form"):
+            email = st.text_input("Adobe/Behance email", value=os.getenv("BEHANCE_EMAIL", ""))
+            pw = st.text_input("Password (blank = use the one in .env)", type="password")
+            if st.form_submit_button("Log in", type="primary", disabled=running):
+                bhl.start_login(email, pw or os.getenv("BEHANCE_PASSWORD", ""))
+                st.session_state.bh_watch = True
+                st.rerun()
+    with st.expander("📤 Upload a session file (fallback)"):
+        st.caption("If Adobe shows a human check: on any computer with the project run "
+                   "`python save_behance_session.py`, log in, then upload "
+                   "`.browser_state/behance_state.json` here.")
+        f = st.file_uploader("behance_state.json", type=["json"], key="bh_state_up")
+        if f and st.button("Save session", key="bh_state_save"):
+            ok, msg = bhl.save_uploaded_state(f.getvalue())
+            (st.toast if ok else st.error)(msg)
+    if running or st.session_state.get("bh_watch") or bhl.read_status().get("status"):
+        _behance_live()
 
 
 # ── History / logs ────────────────────────────────────────────────────────────
