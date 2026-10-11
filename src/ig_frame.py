@@ -24,7 +24,9 @@ DEFAULTS_FILE = ROOT / ".queue" / "ig_frame.json"
 RATIOS = {"4:5 portrait": 4 / 5, "1:1 square": 1.0, "1.91:1 landscape": 1.91,
           "Auto (closest allowed)": None}
 MIN_R, MAX_R, WIDTH = 0.8, 1.91, 1440
-DEFAULT = {"on": True, "ratio": "4:5 portrait", "color": "#FFFFFF", "margin": 0}
+DEFAULT = {"on": True, "ratio": "4:5 portrait", "color": "#000000", "margin": 0, "grid_safe": True}
+GRID_RATIO = 3 / 4   # profile grid tiles are 3:4 — the API can't post 3:4, so we post
+                     # 4:5 and keep the photo inside the centred 3:4 area
 
 
 def load_defaults() -> dict:
@@ -59,21 +61,23 @@ def target_ratio(cfg: dict, first: Path) -> float:
 
 
 def frame_image(img: Image.Image, ratio: float, color: str, margin_pct: float,
-                width: int = WIDTH) -> Image.Image:
+                width: int = WIDTH, grid_safe: bool = False) -> Image.Image:
     W, H = width, round(width / ratio)
-    m = round(min(W, H) * margin_pct / 100)
-    s = min((W - 2 * m) / img.width, (H - 2 * m) / img.height)
+    aw, ah = (min(W, H * GRID_RATIO), min(H, W / GRID_RATIO)) if grid_safe else (W, H)
+    m = round(min(aw, ah) * margin_pct / 100)
+    s = min((aw - 2 * m) / img.width, (ah - 2 * m) / img.height)
     nw, nh = max(1, round(img.width * s)), max(1, round(img.height * s))
     canvas = Image.new("RGB", (W, H), color)
     canvas.paste(img.resize((nw, nh), Image.LANCZOS), ((W - nw) // 2, (H - nh) // 2))
     return canvas
 
 
-def preview_jpeg(path: Path, ratio: float, color: str, margin: float) -> bytes:
+def preview_jpeg(path: Path, ratio: float, color: str, margin: float,
+                 grid_safe: bool = False) -> bytes:
     img, _ = _open(path)
     img.thumbnail((800, 800))
     buf = io.BytesIO()
-    frame_image(img, ratio, color, margin, width=400).save(buf, "JPEG", quality=85)
+    frame_image(img, ratio, color, margin, width=400, grid_safe=grid_safe).save(buf, "JPEG", quality=85)
     return buf.getvalue()
 
 
@@ -86,7 +90,7 @@ def frame_files(paths: list[Path], cfg: dict, project: Path) -> list[Path]:
         img, icc = _open(p)
         dest = out / f"{p.stem}.jpg"
         kw = {"icc_profile": icc} if icc else {}
-        frame_image(img, ratio, cfg["color"], cfg["margin"]).save(
+        frame_image(img, ratio, cfg["color"], cfg["margin"], grid_safe=cfg.get("grid_safe", False)).save(
             dest, "JPEG", quality=95, optimize=True, **kw)
         result.append(dest)
     return result

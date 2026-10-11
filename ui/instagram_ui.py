@@ -124,8 +124,8 @@ def _publish_job(project: Path, urls: list[str], caption: str, alts: list[str]):
 
 
 @st.cache_data(max_entries=60, show_spinner=False)
-def _preview(path: str, mtime: float, ratio: float, color: str, margin: float) -> bytes:
-    return igf.preview_jpeg(Path(path), ratio, color, margin)
+def _preview(path: str, mtime: float, ratio: float, color: str, margin: float, gs: bool) -> bytes:
+    return igf.preview_jpeg(Path(path), ratio, color, margin, gs)
 
 
 def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
@@ -141,7 +141,9 @@ def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
         margin = c4.slider("Extra border %", 0, 15, int(base["margin"]), key="igf_margin",
                            disabled=not on,
                            help="0 = pad only where needed. >0 = uniform frame on all sides.")
-        cfg = {"on": on, "ratio": ratio, "color": color, "margin": margin}
+        gs = st.checkbox("Grid-safe (photo stays fully visible in the 3:4 profile grid)",
+                         value=base.get("grid_safe", True), key="igf_grid", disabled=not on)
+        cfg = {"on": on, "ratio": ratio, "color": color, "margin": margin, "grid_safe": gs}
         if on:
             r = igf.target_ratio(cfg, images[0])
             st.caption(f"All {len(images)} slide(s) → {r:.2f}:1 at 1440 px wide"
@@ -150,7 +152,7 @@ def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
             cols = st.columns(min(4, len(images)))
             for i, img in enumerate(images[:8]):
                 cols[i % len(cols)].image(_preview(str(img), img.stat().st_mtime, r, color,
-                                                   margin), width="stretch")
+                                                   margin, gs), width="stretch")
         elif len(images) > 1:
             st.caption("⚠️ Unframed carousel: Instagram crops slides to the first slide's ratio.")
     d["frame"] = cfg
