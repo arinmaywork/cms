@@ -33,13 +33,13 @@ def _init_cloudinary() -> bool:
     return True
 
 
-def upload_image(image_path: Path) -> str:
+def upload_image(image_path: Path, project: str | None = None) -> str:
     """Uploads a local image and returns the public URL."""
     if not _init_cloudinary():
         raise EnvironmentError("CLOUDINARY_URL not set in .env")
 
     # Sanitize names for Cloudinary
-    project_name = _sanitize(image_path.parent.name)
+    project_name = _sanitize(project or image_path.parent.name)
     filename = _sanitize(image_path.stem)
     public_id = f"cms_uploads/{project_name}/{filename}"
 
@@ -50,7 +50,8 @@ def upload_image(image_path: Path) -> str:
             str(image_path),
             public_id=public_id,
             resource_type="image",
-            overwrite=True
+            overwrite=True,
+            invalidate=True,   # re-framed versions must not be served from CDN cache
         )
         # Log the full keys we got back to debug missing secure_url
         print(f"  [uploader] Keys received: {list(response.keys())}")
@@ -66,9 +67,9 @@ def upload_image(image_path: Path) -> str:
         print(f"  [ERROR] Cloudinary API call failed: {e}")
         raise
 
-def upload_multiple(image_paths: list[Path]) -> list[str]:
+def upload_multiple(image_paths: list[Path], project: str | None = None) -> list[str]:
     """Uploads multiple images sequentially."""
     urls = []
     for p in image_paths:
-        urls.append(upload_image(p))
+        urls.append(upload_image(p, project))
     return urls
