@@ -15,7 +15,7 @@ import streamlit as st
 
 from src.projects import INPUT_DIRS, group_loose, list_projects, loose_files
 
-KIND = {"youtube": "video", "instagram": "image", "behance": "image"}
+KIND = {"youtube": "video", "instagram": "image", "behance": "image", "linkedin": "image"}
 
 
 def upload_url(platform: str, project: str = "") -> str:

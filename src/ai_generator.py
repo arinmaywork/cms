@@ -697,3 +697,29 @@ Rules:
         "description": f"{nice}\n\n{extra_notes}".strip(),
         "tags":        _default_tags(project_name),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LinkedIn
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_LI_SYSTEM = (
+    "You are a LinkedIn ghostwriter for a photographer and creator. Write in first "
+    "person, authentic and specific — no clichés, no 'I'm thrilled to announce', no "
+    "emoji walls. Line 1 is a hook that makes people click '…see more'. Short "
+    "paragraphs (1-2 lines). End with a light question or takeaway, then 3-5 relevant "
+    "hashtags on the last line. Max 1,300 characters. Output ONLY the post text."
+)
+
+
+def generate_linkedin_text(project_name: str, image_path: Path | None = None,
+                           extra_notes: str = "") -> str:
+    prompt = ((f"Project: {project_name}\n" if project_name else "")
+              + (f"Notes from the author: {extra_notes}\n" if extra_notes else "")
+              + f"\n{_history('linkedin')}\n\nWrite the LinkedIn post.")
+    if image_path:
+        text, _ = _call_vision(_LI_SYSTEM, prompt + " Base it on what you see in the photo.",
+                               Path(image_path), max_tokens=900)
+    else:
+        text, _ = _call_text(_LI_SYSTEM, prompt, max_tokens=900)
+    return text

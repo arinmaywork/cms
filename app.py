@@ -36,9 +36,10 @@ if _PW and not st.session_state.get("auth_ok"):
     st.stop()
 
 PAGES = {"📸 Instagram": "instagram", "🎨 Behance": "behance",
-         "▶️ YouTube": "youtube", "⚙️ Settings": "settings"}
+         "▶️ YouTube": "youtube", "💼 LinkedIn": "linkedin",
+         "⚙️ Settings": "settings"}
 
-head1, head2 = st.columns([2, 3])
+head1, head2 = st.columns([3, 3])
 with head1:
     choice = st.segmented_control("Page", list(PAGES), default="▶️ YouTube",
                                   key="nav", label_visibility="collapsed")
@@ -53,6 +54,9 @@ if page == "instagram":
 elif page == "behance":
     from ui.behance_ui import render_behance_ui
     render_behance_ui()
+elif page == "linkedin":
+    from ui.linkedin_ui import render_linkedin_ui
+    render_linkedin_ui()
 elif page == "youtube":
     from ui.youtube_ui import render_youtube_ui
     render_youtube_ui()

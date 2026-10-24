@@ -35,7 +35,7 @@ load_dotenv(ROOT / ".env")
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "streamlit.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024
-REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "archive",
+REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "input_linkedin", "archive",
                  "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 
@@ -109,7 +109,7 @@ def _dashboard(url: str, upload_url: str) -> None:
     os.system("cls" if os.name == "nt" else "clear")
     print("\n  📱  LOCAL SOCIAL MEDIA CMS — RUNNING\n")
     print(f"  UI        {url}\n  Uploads   {upload_url}\n")
-    for p in ("instagram", "behance", "youtube"):
+    for p in ("instagram", "behance", "youtube", "linkedin"):
         print(f"  {p:<10} {len(list_projects(p))} project(s) waiting")
     c = counts()
     if c["total"]:

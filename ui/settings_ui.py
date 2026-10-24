@@ -51,9 +51,13 @@ def render_status_strip() -> None:
     else:
         u = ytq.usage()
         yt_txt = f"🟢 YouTube {u['units_used']:,}/{u['daily_quota']:,} units"
+    import src.linkedin as li
+    ls = li.status()
+    li_txt = (" · 🟢 LinkedIn" + (f" ({ls['days_left']}d)" if ls["days_left"] < 10 else "")
+              if ls.get("connected") else (" · 🔴 LinkedIn expired" if ls.get("name") else ""))
     c = ytb.counts()
     q_txt = f" · 📦 queue {c['done']}/{c['total']}" if c["total"] else ""
-    st.caption(f"{ig_txt} · {bh_txt} · {yt_txt}{q_txt}")
+    st.caption(f"{ig_txt} · {bh_txt} · {yt_txt}{li_txt}{q_txt}")
 
 
 # ── YouTube account ───────────────────────────────────────────────────────────
@@ -122,6 +126,49 @@ def _youtube_section() -> None:
 
 
 # ── Instagram / Behance ───────────────────────────────────────────────────────
+
+def _linkedin_section() -> None:
+    import src.linkedin as li
+    from src.instagram_token import _set_env
+    st.subheader("💼 LinkedIn")
+    s = li.status()
+    if s.get("connected"):
+        (st.success if s["days_left"] > 7 else st.warning)(
+            f"Connected: **{s['name']}** · login valid {s['days_left']} more days")
+        if st.button("Disconnect LinkedIn", key="li_out"):
+            li.sign_out()
+            st.rerun()
+    elif s.get("name"):
+        st.error("Login expired (LinkedIn tokens last 60 days) — reconnect below.")
+    with st.expander("⚙️ App credentials", expanded=not li.configured()):
+        st.caption("One-time: create an app at linkedin.com/developers — see LINKEDIN_SETUP.md. "
+                   f"Authorized redirect URL to add: `{li._redirect()}`")
+        with st.form("li_app_form", clear_on_submit=True):
+            cid = st.text_input("Client ID")
+            sec = st.text_input("Client secret", type="password")
+            if st.form_submit_button("Save") and cid and sec:
+                _set_env("LINKEDIN_CLIENT_ID", cid.strip())
+                _set_env("LINKEDIN_CLIENT_SECRET", sec.strip())
+                st.toast("Saved ✓")
+                st.rerun()
+    if li.configured():
+        with st.expander("🔐 Connect / reconnect", expanded=not s.get("connected")):
+            st.caption("1) Open the login link and click **Allow**. 2) Your browser then shows a "
+                       "page that **can't load** (localhost) — that's expected. 3) Copy the whole "
+                       "address from the address bar and paste it below.")
+            if st.button("Generate login link", key="li_link"):
+                st.session_state.li_auth = li.auth_url()
+            if st.session_state.get("li_auth"):
+                st.link_button("Open LinkedIn login ↗", st.session_state.li_auth)
+            with st.form("li_code_form", clear_on_submit=True):
+                url = st.text_input("Paste the address here")
+                if st.form_submit_button("Finish connecting", type="primary") and url:
+                    ok, msg = li.finish_auth(url)
+                    (st.toast if ok else st.error)(msg)
+                    if ok:
+                        st.session_state.li_auth = ""
+                        st.rerun()
+
 
 def _gemini_section() -> None:
     st.subheader("🤖 Gemini (AI copy)")
@@ -248,11 +295,12 @@ def render_settings_ui() -> None:
         _gemini_section()
     with c2:
         _behance_section()
+        _linkedin_section()
 
     st.divider()
     st.subheader("📋 History")
     hc1, hc2 = st.columns([2, 1])
-    platform = hc1.segmented_control("Platform", ["instagram", "behance", "youtube"],
+    platform = hc1.segmented_control("Platform", ["instagram", "behance", "youtube", "linkedin"],
                                      default="youtube", key="hist_platform")
     n = hc2.number_input("Last N", 1, 50, 10, key="hist_n")
     for e in reversed(get_last_n(platform or "youtube", int(n))):
