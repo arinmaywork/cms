@@ -39,6 +39,31 @@ REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "input_lin
                  "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 
+def _migrate_archive() -> None:
+    """One-time: finished projects moved from archive/ to published/. Merge old
+    folders across so YouTube queue archiving and LinkedIn cross-posting see them."""
+    import shutil
+    old, new = ROOT / "archive", ROOT / "published"
+    if not old.is_dir():
+        return
+    for plat in [d for d in old.iterdir() if d.is_dir()]:
+        for proj in [d for d in plat.iterdir()]:
+            dest = new / plat.name / proj.name
+            if dest.exists():
+                dest = dest.with_name(f"{proj.name}-from-archive")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(proj), str(dest))
+        try:
+            plat.rmdir()
+        except OSError:
+            pass
+    try:
+        old.rmdir()
+        print("  ✅ migrated archive/ → published/")
+    except OSError:
+        pass
+
+
 def _preflight() -> list[str]:
     import shutil
     w = []
@@ -129,6 +154,7 @@ def main() -> None:
 
     for d in REQUIRED_DIRS:
         (ROOT / d).mkdir(parents=True, exist_ok=True)
+    _migrate_archive()
 
     print("\n  📱  LOCAL SOCIAL MEDIA CMS\n")
     for w in _preflight():
