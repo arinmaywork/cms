@@ -27,7 +27,7 @@ launch.py  ── always-on process ──────────────�
         ├─ ui/youtube_ui.py · ui/instagram_ui.py · ui/behance_ui.py
         ├─ ui/settings_ui.py     connections, quota, history, logs
         └─ ui/folder_picker.py   project grid read straight from input_*/
-src/projects.py      input folders = source of truth · drafts (.cms.json) · archive/
+src/projects.py      input folders = source of truth · drafts (.cms.json) · published/
 src/fsutil.py        atomic writes; corrupt files preserved, never overwritten
 src/youtube_batch.py persistent adaptive queue; one worker across processes (flock)
 ```

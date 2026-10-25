@@ -30,3 +30,6 @@ cloudinary>=1.36.0
 google-api-python-client>=2.150.0
 google-auth>=2.35.0
 google-auth-httplib2>=0.2.0
+
+# ── Cloudflare R2 + website stories (see src/r2.py) ──────────────────────────
+boto3>=1.34.0

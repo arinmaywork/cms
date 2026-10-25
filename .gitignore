@@ -45,3 +45,5 @@ input_youtube/*
 
 # YouTube OAuth secrets
 .secrets/
+published/
+archive/

@@ -4,7 +4,7 @@ ui/behance_ui.py — Behance page.
 The Behance publisher TYPES plain text into the editor (formatting can't
 survive that), so sections are plain-text boxes — no HTML snippets.
 Section text persists in <project>/.cms.json; published projects move to
-archive/behance/.
+published/behance/.
 """
 
 import html as _html

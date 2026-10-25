@@ -3,7 +3,7 @@ src/projects.py — the input folders ARE the source of truth.
 
 No consumable queue: projects are listed straight from input_<platform>/
 on every render, so a browser refresh or a second user never "loses" one.
-After a successful publish a project is moved to archive/<platform>/, so
+After a successful publish a project is moved to published/<platform>/, so
 it can't reappear and be published twice.
 
 Drafts (AI text + your edits) persist in <project>/.cms.json so they
@@ -20,18 +20,19 @@ from src.fsutil import atomic_write_json, load_json
 from src.natsort import natkey
 
 ROOT        = Path(__file__).resolve().parent.parent
-ARCHIVE_DIR = ROOT / "archive"
+ARCHIVE_DIR = ROOT / "published"   # finished projects live here (was archive/)
 INPUT_DIRS  = {
     "instagram": ROOT / "input_instagram",
     "behance":   ROOT / "input_behance",
     "youtube":   ROOT / "input_youtube",
     "linkedin":  ROOT / "input_linkedin",
+    "website":   ROOT / "input_website",
 }
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm",
               ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
 PLATFORM_EXTS = {"instagram": IMAGE_EXTS, "behance": IMAGE_EXTS, "youtube": VIDEO_EXTS,
-                 "linkedin": IMAGE_EXTS}
+                 "linkedin": IMAGE_EXTS, "website": {".jpg", ".jpeg"}}  # uploaded as-is, never converted
 DRAFT_FILE = ".cms.json"
 BUSY_SECONDS = 20   # files modified this recently = still being copied
 
@@ -104,7 +105,7 @@ def archive_project(platform: str, folder: Path) -> Path | None:
     if dest.exists():
         dest = dest_root / f"{folder.name}-{time.strftime('%Y%m%d-%H%M%S')}"
     shutil.move(str(folder), str(dest))
-    print(f"  [projects] archived {folder.name} → archive/{platform}/{dest.name}")
+    print(f"  [projects] moved {folder.name} -> published/{platform}/{dest.name}")
     return dest
 
 

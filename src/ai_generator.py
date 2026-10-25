@@ -723,3 +723,31 @@ def generate_linkedin_text(project_name: str, image_path: Path | None = None,
     else:
         text, _ = _call_text(_LI_SYSTEM, prompt, max_tokens=900)
     return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Website story
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_WS_SYSTEM = (
+    "You write photo-story pages for a photographer's portfolio website. First person, "
+    "specific and calm — no clichés, no marketing speak, no emoji. Reply with ONLY a JSON "
+    'object: {"title": short evocative title (max 60 chars), "description": one-sentence '
+    'summary for search results (max 155 chars), "body_md": the story in Markdown, 3-5 '
+    "short paragraphs (150-300 words), plain paragraphs only — no headings, no images, "
+    "no lists}. Never invent facts that are not in the notes or visible in the photo."
+)
+
+
+def generate_story_draft(project_name: str, image_path: Path, extra_notes: str = "") -> dict:
+    """→ {title, description, body_md} drafted from one photo + the author's notes."""
+    import json
+    prompt = (f"Project: {project_name}\n"
+              + (f"Notes from the author: {extra_notes}\n" if extra_notes else "")
+              + "\nWrite the story page JSON. Base it on what you see in the photo.")
+    text, _ = _call_vision(_WS_SYSTEM, prompt, Path(image_path), max_tokens=1500)
+    try:
+        d = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        return {k: str(d.get(k, "")).strip() for k in ("title", "description", "body_md")}
+    except ValueError:
+        raise RuntimeError(f"AI returned unreadable JSON: {text[:200]}")

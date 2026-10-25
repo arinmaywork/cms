@@ -35,7 +35,7 @@ load_dotenv(ROOT / ".env")
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "streamlit.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024
-REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "input_linkedin", "archive",
+REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "input_linkedin", "published",
                  "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 
@@ -75,8 +75,8 @@ def _launch_streamlit(port: int, bind: str):
            "--server.fileWatcherType", "none", "--browser.gatherUsageStats", "false"]
     if bind:
         cmd += ["--server.address", bind]
-    fh = open(LOG_FILE, "a")  # noqa: SIM115
-    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    fh = open(LOG_FILE, "a", encoding="utf-8", errors="replace")  # noqa: SIM115
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     kw = dict(cwd=str(ROOT), stdout=fh, stderr=fh, env=env)
     if os.name != "nt":
         kw["start_new_session"] = True

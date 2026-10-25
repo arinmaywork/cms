@@ -4,7 +4,7 @@ ui/instagram_ui.py — Instagram page.
 Drafts (Cloudinary URLs, hook, per-slide text, alt text, hashtags) persist in
 <project>/.cms.json — written by the automation thread itself and on every
 edit — so a refresh/restart never loses work. Published projects are moved
-to archive/instagram/ so they can't be published twice.
+to published/instagram/ so they can't be published twice.
 """
 
 import traceback

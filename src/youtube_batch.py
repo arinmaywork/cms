@@ -233,7 +233,7 @@ def ensure_worker() -> bool:
 
 
 def _maybe_archive(folder: Path) -> None:
-    """Move a YouTube project to archive/ once every queued video in it is done."""
+    """Move a YouTube project to published/ once every queued video in it is done."""
     from src.projects import INPUT_DIRS, archive_project
     if folder.parent != INPUT_DIRS["youtube"]:
         return

@@ -168,7 +168,7 @@ button{background:#8b5cf6;border:0;cursor:pointer;margin-top:12px}button:disable
 .ok .bar>i{background:#2ecc71}.err{color:#e74c3c}small{color:#999}#sum{margin:12px 0;font-weight:600}</style></head><body>
 <h2>⬆️ Upload to CMS</h2>
 <small>Files stream to the server in 8&nbsp;MB chunks. Network drops are retried automatically. If this page closes, open it again and select the same files — whatever already arrived is skipped.</small>
-<label>Platform<select id=pf><option value=youtube>YouTube</option><option value=instagram>Instagram</option><option value=behance>Behance</option><option value=linkedin>LinkedIn</option></select></label>
+<label>Platform<select id=pf><option value=youtube>YouTube</option><option value=instagram>Instagram</option><option value=behance>Behance</option><option value=linkedin>LinkedIn</option><option value=website>Website</option></select></label>
 <label>Project folder name<input id=pj placeholder="e.g. integrated-photonics"></label>
 <label>Password<input id=key type=password placeholder="APP_PASSWORD (leave empty if not set)"></label>
 <label>Files<input id=files type=file multiple></label>

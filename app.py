@@ -36,7 +36,7 @@ if _PW and not st.session_state.get("auth_ok"):
     st.stop()
 
 PAGES = {"📸 Instagram": "instagram", "🎨 Behance": "behance",
-         "▶️ YouTube": "youtube", "💼 LinkedIn": "linkedin",
+         "▶️ YouTube": "youtube", "💼 LinkedIn": "linkedin", "🌐 Website": "website",
          "⚙️ Settings": "settings"}
 
 head1, head2 = st.columns([3, 3])
@@ -57,6 +57,9 @@ elif page == "behance":
 elif page == "linkedin":
     from ui.linkedin_ui import render_linkedin_ui
     render_linkedin_ui()
+elif page == "website":
+    from ui.website_ui import render_website_ui
+    render_website_ui()
 elif page == "youtube":
     from ui.youtube_ui import render_youtube_ui
     render_youtube_ui()

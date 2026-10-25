@@ -8,7 +8,7 @@ ui/youtube_ui.py — YouTube page.
   empty fields — your edits are never overwritten and nothing is lost on a
   refresh or restart.
 • Video details are paginated (10/page); no inline players for big projects.
-• Queued projects move to archive/youtube/ automatically when fully uploaded.
+• Queued projects move to published/youtube/ automatically when fully uploaded.
 """
 
 import datetime as _dt
