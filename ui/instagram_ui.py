@@ -66,10 +66,16 @@ def _seed(key: str, value: str) -> str:
 
 # ── Background automation (no st.* in here) ──────────────────────────────────
 
+def _sig(cfg: dict, images: list) -> str:
+    """Frame signature; with Auto ratio the cover slide decides the shape."""
+    first = images[0].name if images and str(cfg.get("ratio", "")).startswith("Auto") else ""
+    return igf.signature({**cfg, "first": first})
+
+
 def _upload_framed(project: Path, images: list[Path], cfg: dict, d: dict) -> None:
     files = igf.frame_files(images, cfg, project) if cfg["on"] else images
     d["urls"] = {img.name: u for img, u in zip(images, upload_multiple(files, project.name))}
-    d["frame_sig"] = igf.signature(cfg)
+    d["frame_sig"] = _sig(cfg, images)
 
 
 def _run_upload_only(project: Path, images: list[Path], cfg: dict) -> None:
@@ -161,7 +167,7 @@ def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
             st.caption("⚠️ Unframed carousel: Instagram crops slides to the first slide's ratio.")
     d["frame"] = cfg
     igf.save_defaults(cfg)
-    if any(d["urls"].values()) and d.get("frame_sig") != igf.signature(cfg):
+    if any(d["urls"].values()) and d.get("frame_sig") != _sig(cfg, images):
         st.warning("Frame settings changed since the images were uploaded.")
         if st.button("🖼 Re-frame & upload", key="igf_reupload", type="primary"):
             st.session_state.ig_automating = True
@@ -169,6 +175,71 @@ def _frame_ui(project: Path, images: list[Path], d: dict) -> dict:
                                  platform="ig_automation")
             st.rerun()
     return cfg
+
+
+@st.cache_data(max_entries=200, show_spinner=False)
+def _thumb(path: str, mtime: float, size: int) -> bytes:
+    """Small cached JPEG so the browser isn't sent full-size camera files each rerun."""
+    import io
+    from PIL import ImageOps
+    im = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    im.thumbnail((size, size))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _move(d: dict, name: str, to: int):
+    order = d["order"]
+    order.remove(name)
+    order.insert(max(0, min(to, len(order))), name)
+    _save()
+    st.rerun()
+
+
+def _slides_ui(project: Path, all_imgs: list[Path], d: dict) -> list[Path]:
+    """Carousel order + selection (persisted in the draft). Returns the slides to post."""
+    names = [i.name for i in all_imgs]
+    d["order"] = [n for n in d.get("order", []) if n in names] + \
+                 [n for n in names if n not in d.get("order", [])]
+    excl = set(d.get("exclude", [])) & set(names)
+    if not d.get("exclude_init") and len(names) > 10:        # pre-select the first 10
+        excl = set(d["order"][10:])
+        d["exclude_init"] = True
+    d["exclude"] = sorted(excl)
+    picked = [n for n in d["order"] if n not in excl]
+    with st.expander(f"🔀 Slide order & selection — {len(picked)}/{len(names)} selected "
+                     "(max 10, first = cover)", expanded=len(names) > 10 or len(picked) > 10):
+        if len(picked) > 10:
+            st.warning(f"Instagram allows 10 slides — untick {len(picked) - 10}.")
+        cols = st.columns(6)
+        for i, n in enumerate(d["order"]):
+            with cols[i % 6].container(border=True):
+                st.image(_thumb(str(project / n), (project / n).stat().st_mtime, 300),
+                         width="stretch")
+                pos = d["order"].index(n)
+                on = st.checkbox(f"#{picked.index(n) + 1}" if n in picked else "excluded",
+                                 value=n not in excl, key=f"igs_on_{n}")
+                if on == (n in excl):
+                    d["exclude"] = sorted((excl - {n}) if on else (excl | {n}))
+                    _save()
+                    st.rerun()
+                b1, b2, b3 = st.columns(3)
+                if b1.button("◀", key=f"igs_l_{n}", disabled=pos == 0, help="Move earlier"):
+                    _move(d, n, pos - 1)
+                if b2.button("★", key=f"igs_c_{n}", disabled=pos == 0, help="Make cover (first)"):
+                    _move(d, n, 0)
+                if b3.button("▶", key=f"igs_r_{n}", disabled=pos == len(names) - 1,
+                             help="Move later"):
+                    _move(d, n, pos + 1)
+        if st.button("↺ Reset to filename order", key="igs_reset"):
+            d["order"], d["exclude"] = names, []
+            d["exclude_init"] = False
+            for k in [k for k in st.session_state if str(k).startswith("igs_on_")]:
+                del st.session_state[k]
+            _save()
+            st.rerun()
+    return [project / n for n in picked]
 
 
 def _on_automation_done(result: dict):
@@ -229,8 +300,7 @@ def render_instagram_ui():
     if not images:
         st.error("No images in this folder.")
         return
-    if len(images) > 10:
-        st.warning(f"Instagram carousels allow 10 images — this folder has {len(images)}.")
+    images = _slides_ui(project, images, d)      # user order + include/exclude
 
     cfg = _frame_ui(project, images, d)
     notes = st.text_input("🗒️ AI context", key="ig_notes", placeholder="e.g. minimal architecture")
@@ -253,19 +323,19 @@ def render_instagram_ui():
     for i, img in enumerate(images):
         c1, c2 = st.columns([1, 3])
         with c1:
-            st.image(Image.open(img), width="stretch")
+            st.image(_thumb(str(img), img.stat().st_mtime, 900), width="stretch")
         with c2:
             st.markdown(f"**Slide {i + 1}** · `{img.name}`")
             d["texts"][img.name] = st.text_area(
-                "Caption", key=_seed(f"igw_cap_{i}", d["texts"].get(img.name, "")), height=90)
+                "Caption", key=_seed(f"igw_cap_{img.name}", d["texts"].get(img.name, "")), height=90)
             d["alts"][img.name] = st.text_input(
-                "Alt text", key=_seed(f"igw_alt_{i}", d["alts"].get(img.name, "")))
+                "Alt text", key=_seed(f"igw_alt_{img.name}", d["alts"].get(img.name, "")))
     d["footer"] = st.text_area("Hashtags", key=_seed("igw_footer", d["footer"]))
 
     with st.expander("Advanced: image URLs (filled automatically by Automate)"):
         for i, img in enumerate(images):
             d["urls"][img.name] = st.text_input(
-                img.name, key=_seed(f"igw_url_{i}", d["urls"].get(img.name, "")))
+                img.name, key=_seed(f"igw_url_{img.name}", d["urls"].get(img.name, "")))
     _save()
 
     caption = "\n\n".join(x for x in [d["title"].strip()]
