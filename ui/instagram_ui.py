@@ -7,6 +7,7 @@ edit — so a refresh/restart never loses work. Published projects are moved
 to published/instagram/ so they can't be published twice.
 """
 
+import re
 import traceback
 from pathlib import Path
 
@@ -327,7 +328,7 @@ def render_instagram_ui():
         with c2:
             st.markdown(f"**Slide {i + 1}** · `{img.name}`")
             d["texts"][img.name] = st.text_area(
-                "Caption", key=_seed(f"igw_cap_{img.name}", d["texts"].get(img.name, "")), height=90)
+                "Caption line (all slides are joined into ONE post caption)", key=_seed(f"igw_cap_{img.name}", d["texts"].get(img.name, "")), height=90)
             d["alts"][img.name] = st.text_input(
                 "Alt text", key=_seed(f"igw_alt_{img.name}", d["alts"].get(img.name, "")))
     d["footer"] = st.text_area("Hashtags", key=_seed("igw_footer", d["footer"]))
@@ -347,7 +348,27 @@ def render_instagram_ui():
     st.divider()
     with st.expander(f"🔍 Caption preview ({len(caption):,}/{CHAR_LIMIT:,})", expanded=True):
         st.text(caption or "(empty)")
-    problems = ([f"{missing} image(s) not uploaded yet — click Upload images only (or Automate)"] if missing else []) \
+    tags = re.findall(r"#(\w+)", caption)
+    seen, dups = set(), []
+    for t in tags:
+        (dups.append(t) if t.lower() in seen else seen.add(t.lower()))
+    if dups:
+        c1, c2 = st.columns([3, 1])
+        c1.caption(f"⚠️ Duplicate hashtags: {', '.join('#' + t for t in dict.fromkeys(dups))}")
+        if c2.button("Remove duplicates", key="ig_dedupe"):
+            out, seen2 = [], set()
+            for w in d["footer"].split():
+                k = w.lower()
+                if w.startswith("#") and k in seen2:
+                    continue
+                seen2.add(k)
+                out.append(w)
+            d["footer"] = " ".join(out)
+            st.session_state.pop("igw_footer", None)
+            _save()
+            st.rerun()
+    st.caption(f"{len(seen)} unique hashtag(s) · Instagram rejects posts with more than 30")
+    problems = ([f"{len(tags)} hashtags — Instagram allows max 30"] if len(tags) > 30 else []) + ([f"{missing} image(s) not uploaded yet — click Upload images only (or Automate)"] if missing else []) \
         + (["Caption is empty"] if not caption else []) \
         + ([f"Caption too long ({len(caption):,}/{CHAR_LIMIT:,})"] if len(caption) > CHAR_LIMIT else []) \
         + (["Max 10 images"] if len(images) > 10 else [])
