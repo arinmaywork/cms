@@ -54,10 +54,20 @@ def _post(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
     """
     token = params.pop("access_token", "")
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.post(endpoint, data=params, headers=headers, timeout=30)
-    data = resp.json()
-    if "error" in data:
-        raise RuntimeError(f"Graph API error: {_format_api_error(data['error'])}")
+    resp = requests.post(endpoint, data=params, headers=headers, timeout=30,
+                         allow_redirects=False)
+    data = resp.json() if resp.content else {}
+    err = data.get("error") if isinstance(data, dict) else None
+    # Meta sometimes ignores form bodies ("parameter X is required" although it
+    # was sent) or redirects (which drops POST bodies) — retry once with the
+    # fields in the query string, the form Meta's own docs use.
+    if resp.is_redirect or (err and err.get("code") == 100 and "is required" in str(err.get("message", ""))):
+        print(f"  [ig] body not accepted ({_format_api_error(err) if err else resp.status_code}) — retrying as query params")
+        resp = requests.post(endpoint, params=params, headers=headers, timeout=30)
+        data = resp.json()
+        err = data.get("error")
+    if err:
+        raise RuntimeError(f"Graph API error: {_format_api_error(err)}")
     resp.raise_for_status()
     return data
 
@@ -160,6 +170,9 @@ def publish_to_instagram(
     """
     if not image_urls:
         raise ValueError("At least one image URL is required.")
+    bad = [i + 1 for i, u in enumerate(image_urls) if not str(u).startswith("https://")]
+    if bad:
+        raise ValueError(f"Slide(s) {bad} have no uploaded image URL — click 'Upload images only' first.")
     if len(image_urls) > 10:
         raise ValueError("Instagram allows a maximum of 10 carousel items.")
 
@@ -214,11 +227,14 @@ def publish_to_instagram(
             step_i = i
             progress.update(NS, step_i, "active", f"Sending to Instagram API…")
             alt = alt_texts[i] if (alt_texts and i < len(alt_texts)) else None
-            cid = _create_image_container(
-                ig_user_id, access_token, url,
-                alt_text=alt,
-                is_carousel_item=True
-            )
+            try:
+                cid = _create_image_container(
+                    ig_user_id, access_token, url,
+                    alt_text=alt,
+                    is_carousel_item=True
+                )
+            except Exception as e:
+                raise RuntimeError(f"Slide {i+1} container: {e}") from e
             progress.update(NS, step_i, "active", f"Processing container {cid[:10]}…")
             _poll_until_ready(cid, access_token, step_i, f"Image {i+1}")
             progress.update(NS, step_i, "done", f"Ready ✓  ({cid[:10]}…)")
@@ -227,9 +243,12 @@ def publish_to_instagram(
         # Carousel container step
         carousel_step = n
         progress.update(NS, carousel_step, "active", "Assembling carousel…")
-        carousel_id = _create_carousel_container(
-            ig_user_id, access_token, child_ids, caption
-        )
+        try:
+            carousel_id = _create_carousel_container(
+                ig_user_id, access_token, child_ids, caption
+            )
+        except Exception as e:
+            raise RuntimeError(f"Carousel container: {e}") from e
         _poll_until_ready(carousel_id, access_token, carousel_step, "Carousel container")
         progress.update(NS, carousel_step, "done", f"Container ready ({carousel_id[:10]}…)")
 
