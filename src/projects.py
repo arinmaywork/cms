@@ -111,6 +111,8 @@ def archive_project(platform: str, folder: Path) -> Path | None:
 
 def load_draft(folder: Path) -> dict:
     data = load_json(Path(folder) / DRAFT_FILE, {})
+    if not data:                                   # missing/corrupt → last good copy
+        data = load_json(Path(folder) / (DRAFT_FILE + ".bak"), {})
     return data if isinstance(data, dict) else {}
 
 
@@ -127,4 +129,9 @@ def save_draft(folder: Path, data: dict) -> None:
             return
     except Exception:
         pass
+    if p.exists():                                 # keep the previous version
+        try:
+            atomic_write_json(folder / (DRAFT_FILE + ".bak"), load_json(p, {}))
+        except Exception:
+            pass
     atomic_write_json(p, data)

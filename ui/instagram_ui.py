@@ -17,7 +17,7 @@ from PIL import Image
 import src.progress as progress
 from src.ai_generator import (generate_alt_text, generate_footer_text,
                               generate_image_text, generate_title_text)
-from src.history_manager import save_entry
+from src.history_manager import get_last_n, save_entry
 from src.instagram_publisher import publish_to_instagram
 import src.ig_frame as igf
 from src.projects import archive_project, load_draft, media_files, save_draft
@@ -52,10 +52,19 @@ def _close():
     _drop_widgets()
 
 
+def _has_content(d: dict) -> bool:
+    return bool((d.get("title") or "").strip() or (d.get("footer") or "").strip()
+                or any(v.strip() for v in d.get("texts", {}).values())
+                or any(v.strip() for v in d.get("urls", {}).values()))
+
+
 def _save():
     p = st.session_state.ig_project
     if p and Path(p).exists():
         data = load_draft(p)
+        # Guard: an empty editor must never wipe a draft that has content
+        if not _has_content(st.session_state.ig_d) and _has_content(data.get("instagram", {})):
+            return
         data["instagram"] = st.session_state.ig_d
         save_draft(p, data)
 
@@ -293,6 +302,21 @@ def render_instagram_ui():
     project = Path(project)
     images = media_files(project, "instagram")
     d = st.session_state.ig_d
+    if not _has_content(d):
+        last = next((e for e in reversed(get_last_n("instagram", 50))
+                     if e.get("project") == project.name), None)
+        if last:
+            st.info(f"A publish attempt for this project was saved on {last['timestamp'][:16]}. "
+                    "Restore its caption and uploaded image URLs?")
+            if st.button("↩ Restore from last publish attempt", key="ig_restore", type="primary"):
+                d["title"] = last.get("content", "")
+                urls = [u for u in last.get("images", []) if str(u).startswith("http")]
+                for img, u in zip(images, urls):
+                    d["urls"][img.name] = u
+                _drop_widgets()
+                st.session_state.ig_d = d
+                data = load_draft(project); data["instagram"] = d; save_draft(project, data)
+                st.rerun()
     h1, h2 = st.columns([5, 1])
     h1.subheader(f"📸 {project.name} — {len(images)} image(s)")
     if h2.button("← Projects", key="ig_back", width="stretch"):
