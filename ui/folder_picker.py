@@ -32,6 +32,10 @@ def upload_url(platform: str, project: str = "") -> str:
 def render_project_picker(platform: str) -> Path | None:
     """Render the project grid. Returns the folder the user opened, else None."""
     in_queue: set[str] = set()
+    ig_sched: set[str] = set()
+    if platform == "instagram":
+        from src.ig_schedule import scheduled_paths
+        ig_sched = scheduled_paths()
     if platform == "youtube":
         from src.youtube_batch import project_paths_in_queue
         in_queue = project_paths_in_queue()
@@ -71,6 +75,8 @@ def render_project_picker(platform: str) -> Path | None:
                 st.caption("⏳ still uploading/copying…")
             if str(p["path"]) in in_queue:
                 st.caption("📦 in upload queue")
+            if platform == "instagram" and str(p["path"]) in ig_sched:
+                st.caption("📅 scheduled")
             if st.button("Open", key=f"open_{platform}_{p['name']}", width="stretch",
                          disabled=p["busy"] or p["count"] == 0):
                 return p["path"]

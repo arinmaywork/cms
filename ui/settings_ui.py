@@ -57,7 +57,10 @@ def render_status_strip() -> None:
               if ls.get("connected") else (" · 🔴 LinkedIn expired" if ls.get("name") else ""))
     c = ytb.counts()
     q_txt = f" · 📦 queue {c['done']}/{c['total']}" if c["total"] else ""
-    st.caption(f"{ig_txt} · {bh_txt} · {yt_txt}{li_txt}{q_txt}")
+    from src.ig_schedule import next_post, local_str
+    nxt = next_post()
+    s_txt = f" · 📅 IG next {local_str(nxt['when'])}" if nxt else ""
+    st.caption(f"{ig_txt} · {bh_txt} · {yt_txt}{li_txt}{q_txt}{s_txt}")
 
 
 # ── YouTube account ───────────────────────────────────────────────────────────

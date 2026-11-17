@@ -117,6 +117,8 @@ def _services_loop(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             ensure_worker()
+            from src.ig_schedule import tick as ig_tick
+            ig_tick()
         except Exception as e:
             print(f"  [supervisor] queue check failed: {e}")
         if time.time() - last_ig > 1800:

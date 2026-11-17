@@ -18,6 +18,7 @@ import src.progress as progress
 from src.ai_generator import (generate_alt_text, generate_footer_text,
                               generate_image_text, generate_title_text)
 from src.history_manager import get_last_n, save_entry
+import src.ig_schedule as igs
 from src.instagram_publisher import publish_to_instagram
 import src.ig_frame as igf
 from src.projects import archive_project, load_draft, media_files, save_draft
@@ -252,6 +253,53 @@ def _slides_ui(project: Path, all_imgs: list[Path], d: dict) -> list[Path]:
     return [project / n for n in picked]
 
 
+@st.fragment(run_every=30)
+def _schedule_panel():
+    import pandas as pd
+    data = igs.read()
+    if data.get("alert"):
+        st.error(data["alert"], icon="🔐")
+    items = sorted(data["items"], key=lambda i: i["when"])
+    live = [i for i in items if i["status"] != "done"]
+    done = [i for i in items if i["status"] == "done"][-5:]
+    if not live and not done:
+        return
+    icon = {"scheduled": "📅", "publishing": "🔄", "failed": "❌", "done": "✅"}
+    with st.expander(f"📅 Instagram schedule — {sum(i['status'] == 'scheduled' for i in items)} upcoming",
+                     expanded=bool(live)):
+        rows = live + done
+        df = pd.DataFrame([{"When": igs.local_str(i["when"]), "Project": i["name"],
+                            "Slides": len(i["urls"]), "Status": f"{icon[i['status']]} {i['status']}",
+                            "Note": (i.get("error") or i.get("post_id") or "")[:80]} for i in rows])
+        ev = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
+                          selection_mode="multi-row", key="igsch_tbl")
+        sel = [rows[r] for r in (ev.selection.rows if ev else [])]
+        c1, c2, c3, c4 = st.columns(4)
+        t = c1.time_input("Default time", value=__import__("datetime").time(
+            *map(int, data["settings"]["time"].split(":"))), key="igsch_def", step=900)
+        if t.strftime("%H:%M") != data["settings"]["time"]:
+            igs.set_default_time(t.strftime("%H:%M"))
+        if sel and c2.button(f"🚀 Post {len(sel)} now", width="stretch"):
+            import datetime as _dt
+            for i in sel:
+                igs.set_when(i["id"], _dt.datetime.now(igs.tz()))
+            st.toast("Will post within a minute.")
+            st.rerun()
+        if sel and c3.button(f"🗑 Remove {len(sel)}", width="stretch"):
+            igs.remove([i["id"] for i in sel])
+            st.rerun()
+        if len(sel) == 1 and sel[0]["status"] in ("scheduled", "failed"):
+            with c4.popover("🕒 Move"):
+                import datetime as _dt
+                cur = igs.parse(sel[0]["when"]).astimezone(igs.tz())
+                nd = st.date_input("Date", cur.date(), key="igsch_md")
+                nt = st.time_input("Time", cur.time(), key="igsch_mt", step=900)
+                if st.button("Save", key="igsch_ms"):
+                    igs.set_when(sel[0]["id"], _dt.datetime.combine(nd, nt).replace(tzinfo=igs.tz()))
+                    st.rerun()
+        st.caption("Select rows to post now, move, or remove. Failed posts retry 3× (10 min apart).")
+
+
 def _on_automation_done(result: dict):
     st.session_state.ig_automating = False
     if result.get("success"):
@@ -290,6 +338,8 @@ def render_instagram_ui():
     if st.session_state.ig_publishing:
         live_progress("ig", "🚀 Publishing to Instagram…", _on_publish_done)
         st.stop()
+
+    _schedule_panel()
 
     project = st.session_state.ig_project
     if not project or not Path(project).exists():
@@ -398,10 +448,27 @@ def render_instagram_ui():
         + (["Max 10 images"] if len(images) > 10 else [])
     for p in problems:
         st.caption(f"⚠️ {p}")
-    if st.button("🚀 APPROVE & PUBLISH", type="primary", width="stretch",
+    alts = [d["alts"].get(img.name, "") for img in images]
+    with st.container(border=True):
+        st.markdown("**📅 Schedule instead of posting now**")
+        slot = igs.next_free_slot()
+        s1, s2, s3 = st.columns([1, 1, 1])
+        day = s1.date_input("Date", slot.date(), key="igsch_d")
+        tm = s2.time_input("Time", slot.time(), key="igsch_t", step=900)
+        if s3.button("📅 Add to schedule", width="stretch", disabled=bool(problems)):
+            import datetime as _dt
+            when = _dt.datetime.combine(day, tm).replace(tzinfo=igs.tz())
+            save_entry("instagram", project.name, caption, urls)
+            igs.add(project, urls, caption, alts, when)
+            st.session_state.ig_toast = f"📅 Scheduled {project.name} for {when.strftime('%a %d %b, %H:%M')}"
+            _close()
+            st.rerun()
+        st.caption("Images are already uploaded; the server posts automatically at that time "
+                   "(your device can be off). Edits after scheduling aren't applied — remove "
+                   "and re-add instead.")
+    if st.button("🚀 APPROVE & PUBLISH NOW", type="primary", width="stretch",
                  disabled=bool(problems)):
         save_entry("instagram", project.name, caption, urls)
-        alts = [d["alts"].get(img.name, "") for img in images]
         st.session_state.ig_publishing = True
         start_publish_thread(fn=lambda: _publish_job(project, urls, caption, alts),
                              platform="ig")
