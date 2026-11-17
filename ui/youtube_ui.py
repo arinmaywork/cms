@@ -31,7 +31,7 @@ from src.youtube_publisher import (CATEGORIES, TAGS_MAX_CHARS, TITLE_MAX,
                                    find_thumbnails, find_videos, list_playlists)
 from ui.folder_picker import render_project_picker
 from ui.progress_widget import live_progress, start_publish_thread
-from ui.settings_ui import yt_valid
+from ui.settings_ui import yt_label, yt_valid
 
 PAGE_SIZE = 10
 AUTO_THUMB = "(YouTube default)"
@@ -161,6 +161,7 @@ def _queue_panel():
     df = pd.DataFrame([{
         "#": items.index(it) + 1,
         "File": Path(it["meta"]["path"]).name,
+        "Channel": it["meta"].get("account") or "default",
         "Status": _ICON.get(it["status"], it["status"]),
         "Link": it["url"] or None,
         "Note": (it["error"] or "")[:90],
@@ -207,7 +208,8 @@ def render_youtube_ui():
             st.session_state.yt_error = ""
             st.rerun()
 
-    signed_in = yta.has_token() and yt_valid()
+    accounts = [a for a in yta.list_accounts() if yt_valid(a)]
+    signed_in = bool(accounts)
     if not signed_in:
         st.warning("YouTube isn't connected (or the login expired) — open **⚙️ Settings** "
                    "to connect. You can still prepare projects.", icon="🔐")
@@ -275,6 +277,14 @@ def render_youtube_ui():
     cats = list(CATEGORIES)
     category = s2.selectbox("Category", cats, index=cats.index("People & Blogs"), key="yt_cat")
     kids = s3.checkbox("Made for kids (COPPA)", key="yt_kids")
+    account = "default"
+    if len(accounts) > 1:
+        account = st.selectbox("📺 Upload to channel", accounts, format_func=yt_label, key="yt_account")
+        if st.session_state.get("yt_pl_acct") != account:     # playlists are per channel
+            st.session_state.yt_playlists, st.session_state.yt_pl_acct = None, account
+    elif accounts:
+        account = accounts[0]
+        st.caption(f"📺 Channel: **{yt_label(account)}**")
     notify = s3.checkbox("Notify subscribers", value=True, key="yt_notify")
 
     publish_at = None
@@ -290,7 +300,7 @@ def render_youtube_ui():
     pls = st.session_state.yt_playlists
     if p3.button("🔄 Load playlists", disabled=not signed_in, width="stretch"):
         try:
-            st.session_state.yt_playlists = list_playlists()
+            st.session_state.yt_playlists = list_playlists(account)
         except Exception as e:
             st.session_state.yt_error = f"Could not load playlists: {e}"
         st.rerun()
@@ -355,7 +365,7 @@ def render_youtube_ui():
             "publish_at": publish_at, "playlist_id": playlist_id,
             "new_playlist_title": "" if playlist_id else new_pl.strip(),
             "thumbnail": str(project / th) if th != AUTO_THUMB and (project / th).exists() else None,
-            "notify_subscribers": notify,
+            "notify_subscribers": notify, "account": account,
         })
     n_th = sum(1 for it in items if it["thumbnail"])
     n_pl = len(items) if (playlist_id or new_pl.strip()) else 0

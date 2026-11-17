@@ -23,13 +23,18 @@ BH_STATE = ROOT / ".browser_state" / "behance_state.json"
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def yt_valid() -> bool:
-    return yta.is_valid()
+def yt_valid(account: str = "default") -> bool:
+    return yta.is_valid(account)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def yt_channel() -> dict | None:
-    return yta.channel_info()
+def yt_channel(account: str = "default") -> dict | None:
+    return yta.channel_info(account)
+
+
+def yt_label(account: str) -> str:
+    info = yt_channel(account) if yta.has_token(account) else None
+    return (info or {}).get("title") or account
 
 
 def _clear_yt_caches() -> None:
@@ -44,13 +49,16 @@ def render_status_strip() -> None:
     ig_txt = ("⚪ IG not set" if not ig["configured"] else
               "🟢 IG" if ig["ok"] else "🔴 IG token invalid")
     bh_txt = "🟢 Behance" if BH_STATE.exists() else "🔴 Behance login missing"
-    if not yta.has_token():
+    accs = yta.list_accounts()
+    bad = [a for a in accs if not yt_valid(a)]
+    if not accs:
         yt_txt = "⚪ YouTube not connected"
-    elif not yt_valid():
-        yt_txt = "🔴 YouTube login expired"
+    elif bad:
+        yt_txt = f"🔴 YouTube login expired ({', '.join(bad)})"
     else:
         u = ytq.usage()
-        yt_txt = f"🟢 YouTube {u['units_used']:,}/{u['daily_quota']:,} units"
+        n = f" ({len(accs)} channels)" if len(accs) > 1 else ""
+        yt_txt = f"🟢 YouTube{n} {u['units_used']:,}/{u['daily_quota']:,} units"
     import src.linkedin as li
     ls = li.status()
     li_txt = (" · 🟢 LinkedIn" + (f" ({ls['days_left']}d)" if ls["days_left"] < 10 else "")
@@ -66,34 +74,35 @@ def render_status_strip() -> None:
 # ── YouTube account ───────────────────────────────────────────────────────────
 
 @st.fragment(run_every=3)
-def _yt_device_flow_waiting() -> None:
-    auth = yta.read_auth_status()
+def _yt_device_flow_waiting(account: str) -> None:
+    auth = yta.read_auth_status(account)
     if auth.get("status") == "pending":
         st.info(f"1. On any device open **{auth.get('verification_url', 'google.com/device')}**\n\n"
-                f"2. Enter code: **`{auth.get('user_code', '')}`**\n\nWaiting for approval…")
-        if st.button("Cancel sign-in", key="yt_cancel_auth"):
-            yta.clear_auth_status()
+                f"2. Enter code: **`{auth.get('user_code', '')}`**\n\n"
+                "3. Pick the Google account — and, if asked, **the channel** — for this slot.")
+        if st.button("Cancel sign-in", key=f"yt_cancel_{account}"):
+            yta.clear_auth_status(account)
             st.rerun()
         return
     if auth.get("status") == "granted":
-        yta.clear_auth_status()
+        yta.clear_auth_status(account)
         _clear_yt_caches()
-        if ytb.read().get("pause_reason") == "auth":   # queue was paused by expired login
+        if ytb.read().get("pause_reason") == "auth":   # queue was paused by an expired login
             ytb.set_paused(False)
             ytb.ensure_worker()
         st.rerun()
 
 
-def _yt_connect_button() -> None:
-    auth = yta.read_auth_status()
+def _yt_connect_button(account: str, label: str = "🔐 Connect") -> None:
+    auth = yta.read_auth_status(account)
     if auth.get("status") in ("pending", "granted"):
-        _yt_device_flow_waiting()
+        _yt_device_flow_waiting(account)
         return
     if auth.get("status") in ("denied", "expired", "error"):
         st.error(f"Sign-in {auth['status']}. Try again.")
-    if st.button("🔐 Connect YouTube account", key="yt_connect", type="primary"):
+    if st.button(label, key=f"yt_connect_{account}", type="primary"):
         try:
-            yta.start_device_flow()
+            yta.start_device_flow(account)
         except Exception as e:
             st.error(str(e))
             return
@@ -101,31 +110,43 @@ def _yt_connect_button() -> None:
 
 
 def _youtube_section() -> None:
-    st.subheader("▶️ YouTube")
+    st.subheader("▶️ YouTube channels")
     if not yta.has_client_secret():
         st.warning("No API credentials. Follow YOUTUBE_SETUP.md, then place the JSON at "
                    "`.secrets/youtube_client_secret.json`.")
         return
-    if yta.has_token():
-        if yt_valid():
-            info = yt_channel()
-            st.success(f"Connected: **{info['title']}**" if info else "Connected")
-        else:
-            st.error("Login expired or revoked — reconnect:")
-            _yt_connect_button()
-        if st.button("Sign out of YouTube", key="yt_signout"):
-            yta.sign_out()
-            yta.clear_auth_status()
-            _clear_yt_caches()
-            st.rerun()
-        u = ytq.usage()
-        cap = str(u["uploads_cap"]) if u["uploads_cap"] > 0 else "auto"
-        st.progress(min(1.0, u["units_used"] / max(1, u["daily_quota"])),
-                    text=f"API quota {u['units_used']:,}/{u['daily_quota']:,} · "
-                         f"uploads today {u['uploads_today']} (limit: {cap}) · "
-                         f"resets {ytq.time_until_reset_str()} (midnight PT)")
+    accounts = yta.list_accounts()
+    for acc in accounts:
+        with st.container(border=True):
+            if yt_valid(acc):
+                st.success(f"**{yt_label(acc)}**  ·  slot `{acc}`")
+            else:
+                st.error(f"Slot `{acc}`: login expired or revoked — reconnect:")
+                _yt_connect_button(acc, "🔐 Reconnect")
+            if st.button("Sign out", key=f"yt_signout_{acc}"):
+                yta.sign_out(acc)
+                yta.clear_auth_status(acc)
+                _clear_yt_caches()
+                st.rerun()
+    if not accounts:
+        _yt_connect_button("default", "🔐 Connect YouTube channel")
     else:
-        _yt_connect_button()
+        with st.expander("➕ Add another channel"):
+            st.caption("Give it a short name (e.g. `travel`, `tutorials`). On the Google screen pick "
+                       "the account — and the **channel** if it's a Brand Account. If your OAuth "
+                       "consent screen is still in *Testing*, add that Google account as a test user.")
+            name = st.text_input("Slot name", key="yt_new_slot", placeholder="travel")
+            slot = yta._slug(name)
+            if name and slot in accounts:
+                st.warning("That name is already used.")
+            elif name:
+                _yt_connect_button(slot, f"🔐 Connect channel as `{slot}`")
+    u = ytq.usage()
+    cap = str(u["uploads_cap"]) if u["uploads_cap"] > 0 else "auto"
+    st.progress(min(1.0, u["units_used"] / max(1, u["daily_quota"])),
+                text=f"Shared API quota (all channels) {u['units_used']:,}/{u['daily_quota']:,} · "
+                     f"uploads today {u['uploads_today']} (limit: {cap}) · resets "
+                     f"{ytq.time_until_reset_str()} (midnight PT)")
 
 
 # ── Instagram / Behance ───────────────────────────────────────────────────────

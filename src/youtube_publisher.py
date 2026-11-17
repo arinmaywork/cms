@@ -199,12 +199,12 @@ def _is_retryable_http(exc: Exception) -> bool:
 
 # ── Playlists ─────────────────────────────────────────────────────────────────
 
-def find_recent_upload(title: str, limit: int = 15) -> str | None:
+def find_recent_upload(title: str, limit: int = 15, account: str = "default") -> str | None:
     """Return the URL of a recent channel upload with exactly this title, or None.
     Used before re-uploading an item that was mid-upload when the process died
     (YouTube may have accepted it before we saved the ID). ~2 quota units."""
     want = sanitize_metadata(title, "", [])["title"].strip().lower()
-    yt = get_service()
+    yt = get_service(account)
     ch = yt.channels().list(part="contentDetails", mine=True).execute()
     quota.record("channels.list")
     items = ch.get("items", [])
@@ -221,9 +221,9 @@ def find_recent_upload(title: str, limit: int = 15) -> str | None:
     return None
 
 
-def list_playlists() -> list[dict[str, str]]:
+def list_playlists(account: str = "default") -> list[dict[str, str]]:
     """Return the signed-in channel's playlists [{id, title, count}]. ~1-2 units."""
-    yt = get_service()
+    yt = get_service(account)
     out: list[dict[str, str]] = []
     token = None
     while True:
@@ -244,23 +244,23 @@ def list_playlists() -> list[dict[str, str]]:
     return out
 
 
-def ensure_playlist(title: str, privacy: str = "unlisted") -> str:
+def ensure_playlist(title: str, privacy: str = "unlisted", account: str = "default") -> str:
     """Return the ID of the channel's playlist with this title, creating it
     only if it doesn't exist. Idempotent — safe to call once per video."""
     want = title.strip().lower()
     try:
-        for p in list_playlists():
+        for p in list_playlists(account):
             if p["title"].strip().lower() == want:
                 return p["id"]
     except Exception as e:
         print(f"  [yt] playlist lookup failed ({e}) — will create")
-    return create_playlist(title, privacy)
+    return create_playlist(title, privacy, account=account)
 
 
 def create_playlist(title: str, privacy: str = "unlisted",
-                    description: str = "") -> str:
+                    description: str = "", account: str = "default") -> str:
     """Create a playlist, return its ID. 50 units."""
-    yt = get_service()
+    yt = get_service(account)
     resp = yt.playlists().insert(
         part="snippet,status",
         body={
@@ -413,6 +413,7 @@ def publish_to_youtube(items: list[dict[str, Any]]) -> dict[str, Any]:
     also checks before enabling the button).
     """
     n = len(items)
+    account = (items[0].get("account") if items else None) or "default"
     labels: list[str] = ["Pre-flight checks"]
     for i, it in enumerate(items):
         labels.append(f"Upload {i+1}/{n}: {Path(it['path']).name}")
@@ -438,7 +439,7 @@ def publish_to_youtube(items: list[dict[str, Any]]) -> dict[str, Any]:
         if not ok:
             raise RuntimeError(reason)
 
-        yt = get_service()
+        yt = get_service(account)
         progress.update(NS, 0, "done",
                         f"OK — {n} video(s), ~{cost} quota units planned")
 
@@ -473,7 +474,7 @@ def publish_to_youtube(items: list[dict[str, Any]]) -> dict[str, Any]:
                     # ensure_playlist reuses an existing playlist of the same
                     # name — repeated single-item calls can't create duplicates
                     new_playlist_ids[new_pl] = ensure_playlist(
-                        new_pl, privacy=it.get("privacy", "unlisted")
+                        new_pl, account=account, privacy=it.get("privacy", "unlisted")
                         if it.get("privacy") != "private" else "unlisted")
                     notes.append(f"playlist '{new_pl}' ready")
                 pl_id = new_playlist_ids[new_pl]

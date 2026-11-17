@@ -21,6 +21,7 @@ Token is persisted to .secrets/youtube_token.json and auto-refreshed.
 """
 
 import json
+import re
 import os
 import threading
 import time
@@ -74,13 +75,36 @@ def load_client_config() -> tuple[str, str]:
     return cid, csec
 
 
+# ── Accounts (one token per YouTube channel) ─────────────────────────────────
+# "default" keeps the original file names, so existing logins keep working.
+
+def _slug(account: str) -> str:
+    return re.sub(r"[^a-z0-9_-]", "", (account or "default").lower()) or "default"
+
+
+def _token(account: str = "default") -> Path:
+    a = _slug(account)
+    return TOKEN_FILE if a == "default" else SECRETS_DIR / f"youtube_token_{a}.json"
+
+
+def _status(account: str = "default") -> Path:
+    a = _slug(account)
+    return AUTH_STATUS_FILE if a == "default" else ROOT / ".queue" / f"yt_auth_status_{a}.json"
+
+
+def list_accounts() -> list[str]:
+    accs = ["default"] if TOKEN_FILE.exists() else []
+    accs += sorted(f.stem[len("youtube_token_"):] for f in SECRETS_DIR.glob("youtube_token_*.json"))
+    return accs
+
+
 # ── Token persistence ─────────────────────────────────────────────────────────
 
-def has_token() -> bool:
-    return TOKEN_FILE.exists()
+def has_token(account: str = "default") -> bool:
+    return _token(account).exists()
 
 
-def _save_token(payload: dict[str, Any], client_id: str, client_secret: str) -> None:
+def _save_token(payload: dict[str, Any], client_id: str, client_secret: str, account: str = "default") -> None:
     SECRETS_DIR.mkdir(parents=True, exist_ok=True)
     info = {
         "token":         payload.get("access_token"),
@@ -91,30 +115,30 @@ def _save_token(payload: dict[str, Any], client_id: str, client_secret: str) -> 
         "scopes":        SCOPES,
         "expiry_epoch":  time.time() + float(payload.get("expires_in", 3600)),
     }
-    atomic_write_json(TOKEN_FILE, info, mode=0o600)
+    atomic_write_json(_token(account), info, mode=0o600)
 
 
-def sign_out() -> None:
+def sign_out(account: str = "default") -> None:
     """Revoke and delete the stored token."""
     try:
-        info = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+        info = json.loads(_token(account).read_text(encoding="utf-8"))
         tok = info.get("refresh_token") or info.get("token")
         if tok:
             requests.post("https://oauth2.googleapis.com/revoke",
                           params={"token": tok}, timeout=10)
     except Exception:
         pass
-    TOKEN_FILE.unlink(missing_ok=True)
+    _token(account).unlink(missing_ok=True)
 
 
-def get_credentials():
+def get_credentials(account: str = "default"):
     """Return refreshed google.oauth2 Credentials, or None if not signed in."""
-    if not TOKEN_FILE.exists():
+    if not _token(account).exists():
         return None
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    info = load_json(TOKEN_FILE, None)
+    info = load_json(_token(account), None)
     if not isinstance(info, dict):
         return None
     creds = Credentials(
@@ -131,7 +155,7 @@ def get_credentials():
             creds.refresh(Request())
             info["token"]        = creds.token
             info["expiry_epoch"] = time.time() + 3500
-            atomic_write_json(TOKEN_FILE, info, mode=0o600)
+            atomic_write_json(_token(account), info, mode=0o600)
         except Exception as e:
             # Refresh token revoked/expired → force re-auth
             print(f"  [yt:auth] token refresh failed: {e}")
@@ -139,14 +163,14 @@ def get_credentials():
     return creds
 
 
-def is_valid() -> bool:
+def is_valid(account: str = "default") -> bool:
     """True when a stored token exists AND still refreshes (no API quota used)."""
-    return has_token() and get_credentials() is not None
+    return has_token(account) and get_credentials(account) is not None
 
 
-def get_service():
+def get_service(account: str = "default"):
     """Return an authorised YouTube Data API v3 service, or raise."""
-    creds = get_credentials()
+    creds = get_credentials(account)
     if creds is None:
         raise RuntimeError(
             "Not signed in to YouTube. Open the ▶️ YouTube tab and click "
@@ -158,24 +182,24 @@ def get_service():
 
 # ── Device flow ───────────────────────────────────────────────────────────────
 
-def _write_auth_status(status: str, **extra) -> None:
-    atomic_write_json(AUTH_STATUS_FILE, {"status": status, "ts": time.time(), **extra})
+def _write_auth_status(status: str, account: str = "default", **extra) -> None:
+    atomic_write_json(_status(account), {"status": status, "ts": time.time(), **extra})
 
 
-def read_auth_status() -> dict[str, Any]:
-    if not AUTH_STATUS_FILE.exists():
+def read_auth_status(account: str = "default") -> dict[str, Any]:
+    if not _status(account).exists():
         return {"status": "idle"}
     try:
-        return json.loads(AUTH_STATUS_FILE.read_text(encoding="utf-8"))
+        return json.loads(_status(account).read_text(encoding="utf-8"))
     except Exception:
         return {"status": "idle"}
 
 
-def clear_auth_status() -> None:
-    AUTH_STATUS_FILE.unlink(missing_ok=True)
+def clear_auth_status(account: str = "default") -> None:
+    _status(account).unlink(missing_ok=True)
 
 
-def start_device_flow() -> dict[str, Any]:
+def start_device_flow(account: str = "default") -> dict[str, Any]:
     """
     Step 1: request device + user codes.
     Returns {"user_code", "verification_url", "device_code", "interval", "expires_in"}
@@ -196,14 +220,14 @@ def start_device_flow() -> dict[str, Any]:
             "Make sure the OAuth client type is 'TVs and Limited Input devices'."
         )
 
-    _write_auth_status("pending",
+    _write_auth_status("pending", account=account,
                        user_code=data["user_code"],
                        verification_url=data["verification_url"])
 
     t = threading.Thread(
         target=_poll_for_token,
         args=(client_id, client_secret, data["device_code"],
-              int(data.get("interval", 5)), int(data.get("expires_in", 1800))),
+              int(data.get("interval", 5)), int(data.get("expires_in", 1800)), account),
         daemon=True, name="yt-device-poll",
     )
     t.start()
@@ -211,7 +235,7 @@ def start_device_flow() -> dict[str, Any]:
 
 
 def _poll_for_token(client_id: str, client_secret: str, device_code: str,
-                    interval: int, expires_in: int) -> None:
+                    interval: int, expires_in: int, account: str = "default") -> None:
     deadline = time.time() + expires_in
     wait = max(interval, 5)
     while time.time() < deadline:
@@ -229,8 +253,8 @@ def _poll_for_token(client_id: str, client_secret: str, device_code: str,
             continue
 
         if "access_token" in data:
-            _save_token(data, client_id, client_secret)
-            _write_auth_status("granted")
+            _save_token(data, client_id, client_secret, account)
+            _write_auth_status("granted", account=account)
             print("  [yt:auth] ✅ YouTube authorised")
             return
         err = data.get("error", "")
@@ -240,22 +264,22 @@ def _poll_for_token(client_id: str, client_secret: str, device_code: str,
             wait += 5
             continue
         if err == "access_denied":
-            _write_auth_status("denied")
+            _write_auth_status("denied", account=account)
             return
         if err in ("expired_token", "invalid_grant"):
-            _write_auth_status("expired")
+            _write_auth_status("expired", account=account)
             return
-        _write_auth_status("error", error=str(data))
+        _write_auth_status("error", account=account, error=str(data))
         return
-    _write_auth_status("expired")
+    _write_auth_status("expired", account=account)
 
 
 # ── Channel info (1 quota unit) ───────────────────────────────────────────────
 
-def channel_info() -> dict[str, Any] | None:
+def channel_info(account: str = "default") -> dict[str, Any] | None:
     """Return {"title", "id", "thumbnail"} for the signed-in channel, or None."""
     try:
-        yt = get_service()
+        yt = get_service(account)
         resp = yt.channels().list(part="snippet", mine=True).execute()
         items = resp.get("items", [])
         if not items:

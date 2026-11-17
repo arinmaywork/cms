@@ -317,6 +317,17 @@ def _worker_loop() -> None:
         if nxt is None:
             nxt = next((it for it in by_order if it["status"] == "pending"), None)
         if nxt is None:
+            waiting = [it for it in data["items"] if it["status"] == "deferred" and it.get("defer_until")]
+            if waiting:                                   # per-channel deferrals pending
+                if any(it["defer_until"] <= time.time() for it in waiting):
+                    def _wake(d):
+                        for it in d["items"]:
+                            if it["status"] == "deferred" and 0 < it.get("defer_until", 0) <= time.time():
+                                it["status"], it["defer_until"] = "pending", 0
+                    _mark(_wake)
+                else:
+                    time.sleep(60)
+                continue
             print("  [yt:batch] queue empty — worker exiting")
             return
 
@@ -327,7 +338,8 @@ def _worker_loop() -> None:
             try:
                 from src.youtube_publisher import find_recent_upload
                 found = find_recent_upload(nxt["meta"].get("title")
-                                           or Path(nxt["meta"]["path"]).stem)
+                                           or Path(nxt["meta"]["path"]).stem,
+                                           account=nxt["meta"].get("account") or "default")
             except Exception as e:
                 print(f"  [yt:batch] duplicate check skipped: {e}")
             if found:
@@ -361,10 +373,12 @@ def _worker_loop() -> None:
                 from src.youtube_publisher import ensure_playlist
                 pl_privacy = (meta.get("privacy", "unlisted")
                               if meta.get("privacy") != "private" else "unlisted")
-                pid = ensure_playlist(npt, pl_privacy)
+                acct = meta.get("account") or "default"
+                pid = ensure_playlist(npt, pl_privacy, account=acct)
                 def _stamp(d):
                     for it in d["items"]:
-                        if (it["meta"].get("new_playlist_title") or "").strip().lower() == npt.lower():
+                        if ((it["meta"].get("new_playlist_title") or "").strip().lower() == npt.lower()
+                                and (it["meta"].get("account") or "default") == acct):
                             it["meta"]["playlist_id"] = pid
                             it["meta"]["new_playlist_title"] = ""
                 _mark(_stamp)
@@ -419,6 +433,20 @@ def _worker_loop() -> None:
                 limited = True
                 note = (f"{MAX_CONSECUTIVE_FAILURES} consecutive failures "
                         f"(last: {err_display[:80]}) — pausing as a safety measure")
+
+        if limited and note.startswith("YouTube channel upload limit"):
+            # Per-CHANNEL cap: defer only this channel's videos; others keep going
+            acct = meta.get("account") or "default"
+            until = time.time() + quota.seconds_until_reset() + 300
+            def _defer_acct(d):
+                for it in d["items"]:
+                    if (it["meta"].get("account") or "default") == acct and (
+                            it["id"] == item_id or it["status"] in ("pending", "uploading")):
+                        it["status"], it["error"], it["defer_until"] = "deferred", "", until
+            _mark(_defer_acct)
+            consecutive_failures = 0
+            print(f"  [yt:batch] channel '{acct}' hit its upload limit — its videos resume after midnight PT")
+            continue
 
         if limited:
             # YouTube said stop → learn today's real capacity, park until reset
