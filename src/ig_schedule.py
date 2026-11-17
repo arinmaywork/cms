@@ -96,12 +96,48 @@ def next_free_slot() -> datetime:
     return datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz())
 
 
-def add(project: Path, urls: list[str], caption: str, alts: list[str], when: datetime) -> str:
+def _inbox(item: dict, **kw) -> None:
+    """Mirror state into <inbox>/<id>/status.json for the Telegram tool."""
+    if not item.get("inbox_dir"):
+        return
+    p = Path(item["inbox_dir"]) / "status.json"
+    try:
+        st = load_json(p, {})
+        st.update(kw, publish_at=item.get("when"), schedule_id=item["id"],
+                  updated=_utc(datetime.now(timezone.utc)))
+        atomic_write_json(p, st)
+    except Exception as e:
+        print(f"  [ig:schedule] inbox status write failed: {e}")
+
+
+def add(project: Path, urls: list[str], caption: str, alts: list[str], when: datetime,
+        extra: dict | None = None) -> str:
+    """extra: {"type": "reel", "video_url", "cover_url", "share_to_feed", "inbox_dir", "inbox_id"}"""
     item = {"id": uuid.uuid4().hex[:8], "project": str(project), "name": Path(project).name,
             "when": _utc(when), "status": "scheduled", "urls": urls, "caption": caption,
-            "alts": alts, "attempts": 0, "error": "", "post_id": "", "ts": time.time()}
+            "alts": alts, "attempts": 0, "error": "", "post_id": "", "ts": time.time(),
+            "type": "carousel" if len(urls) > 1 else "image", **(extra or {})}
     _mutate(lambda d: d["items"].append(item))
+    _inbox(item, state="scheduled")
     return item["id"]
+
+
+def cancel_inbox(inbox_dir: str) -> bool:
+    hit = []
+    def f(d):
+        keep = []
+        for i in d["items"]:
+            if i.get("inbox_dir") == inbox_dir and i["status"] in ("scheduled", "failed"):
+                hit.append(i)
+            else:
+                keep.append(i)
+        d["items"] = keep
+    _mutate(f)
+    return bool(hit)
+
+
+def has_inbox_id(inbox_id: str) -> bool:
+    return any(i.get("inbox_id") == inbox_id for i in _load()["items"])
 
 
 def remove(ids: list[str]) -> None:
@@ -160,6 +196,7 @@ def tick() -> None:
             if i["status"] == "publishing" and time.time() - i.get("started", 0) > 900:
                 i.update(status="failed", error="Interrupted while publishing — check "
                          "Instagram before retrying (it may already be live).")
+                _inbox(i, state="failed", error=i["error"])
         _check_token(d)
         due = sorted((i for i in d["items"] if i["status"] == "scheduled"
                       and parse(i["when"]) <= now and i.get("retry_at", 0) <= time.time()),
@@ -174,7 +211,16 @@ def tick() -> None:
         return
     from src.instagram_publisher import publish_to_instagram
     print(f"  [ig:schedule] publishing {item['name']} (due {item['when']})")
-    res = publish_to_instagram(item["urls"], item["caption"], alt_texts=item["alts"])
+    _inbox(item, state="publishing")
+    if item.get("type") == "reel":
+        from src.instagram_publisher import publish_reel
+        res = publish_reel(item["video_url"], item["caption"], item.get("cover_url"),
+                           item.get("share_to_feed", True))
+    else:
+        res = publish_to_instagram(item["urls"], item["caption"], alt_texts=item["alts"])
+        if res.get("success"):
+            from src.instagram_publisher import permalink
+            res["permalink"] = permalink(res.get("post_id", ""))
 
     def done(d):
         for i in d["items"]:
@@ -182,14 +228,18 @@ def tick() -> None:
                 continue
             if res.get("success"):
                 i.update(status="done", post_id=res.get("post_id", ""), error="",
+                         permalink=res.get("permalink", ""),
                          published_at=_utc(datetime.now(timezone.utc)))
+                _inbox(i, state="published", post_id=i["post_id"], permalink=i["permalink"], error="")
             else:
                 i["attempts"] += 1
                 i["error"] = str(res.get("error", ""))[:300]
                 if i["attempts"] < MAX_ATTEMPTS:
                     i.update(status="scheduled", retry_at=time.time() + RETRY_MIN * 60)
+                    _inbox(i, state="scheduled", error=f"retrying: {i['error']}")
                 else:
                     i["status"] = "failed"
+                    _inbox(i, state="failed", error=i["error"])
     _mutate(done)
     if res.get("success"):
         from src.projects import archive_project

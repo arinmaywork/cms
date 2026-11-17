@@ -57,6 +57,9 @@ def list_projects(platform: str) -> list[dict]:
     for p in sorted((x for x in d.iterdir() if x.is_dir() and not x.name.startswith(".")),
                     key=lambda x: natkey(x.name)):
         files = media_files(p, platform)
+        if platform == "instagram":            # reels live in IG projects too
+            from src.ig_reel import videos_in
+            files += videos_in(p)
         try:
             entries = list(p.iterdir())
         except OSError:

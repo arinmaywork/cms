@@ -28,17 +28,7 @@ from ui.progress_widget import live_progress, start_publish_thread
 
 CHAR_LIMIT = 2_200
 EMPTY = {"title": "", "footer": "", "signature": "", "urls": {}, "texts": {}, "alts": {}}
-TEXT_DEFAULTS_FILE = Path(__file__).resolve().parent.parent / ".queue" / "ig_text_defaults.json"
-TEXT_DEFAULTS = {
-    "hashtags": "#photography #fujifilm #captureone #portrait #portraiture #people #life",
-    "signature": "More images @ 𝙗𝙚𝙝𝙖𝙣𝙘𝙚.𝙣𝙚𝙩/𝙖𝙧𝙞𝙣𝙢𝙖𝙮\nExplore the site @ 𝙘𝙖𝙥𝙩𝙪𝙧𝙚.𝙖𝙙𝙖𝙩𝙩𝙖.𝙞𝙣",
-}
-
-
-def _text_defaults() -> dict:
-    from src.fsutil import load_json
-    d = load_json(TEXT_DEFAULTS_FILE, {})
-    return {**TEXT_DEFAULTS, **(d if isinstance(d, dict) else {})}
+from src.ig_text import TEXT_DEFAULTS_FILE, text_defaults as _text_defaults
 
 
 
@@ -285,7 +275,8 @@ def _schedule_panel():
                      expanded=bool(live)):
         rows = live + done
         df = pd.DataFrame([{"When": igs.local_str(i["when"]), "Project": i["name"],
-                            "Slides": len(i["urls"]), "Status": f"{icon[i['status']]} {i['status']}",
+                            "Type": {"reel": "🎬 reel", "carousel": "🖼 carousel"}.get(i.get("type"), "🖼 image"),
+                            "Slides": len(i["urls"]) or "—", "Status": f"{icon[i['status']]} {i['status']}",
                             "Note": (i.get("error") or i.get("post_id") or "")[:80]} for i in rows])
         ev = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
                           selection_mode="multi-row", key="igsch_tbl")
@@ -374,8 +365,161 @@ def _defaults_editor():
                 st.toast("Saved — applies to newly opened projects")
 
 
+# ── Reels ─────────────────────────────────────────────────────────────────────
+@st.cache_data(max_entries=50, show_spinner=False)
+def _probe_cached(path: str, mtime: float) -> dict:
+    from src import ig_reel
+    return ig_reel.probe(Path(path))
+
+
+@st.cache_data(max_entries=40, show_spinner=False)
+def _frame_cached(path: str, mtime: float, sec: float) -> bytes | None:
+    from src import ig_reel
+    return ig_reel.frame_at(Path(path), sec, width=480)
+
+
+def _reel_prepare(project: Path, video: Path, r: dict) -> tuple[str, str | None]:
+    from src import ig_reel
+    from src.uploader import upload_image, upload_video
+    c = project / ".ig_ready" / "cover.jpg"
+    c.parent.mkdir(exist_ok=True)
+    c.unlink(missing_ok=True)
+    if r.get("cover_mode") == "image" and r.get("cover_file"):
+        import shutil
+        shutil.copy2(project / r["cover_file"], c)
+    else:
+        ig_reel.frame_at(video, float(r.get("cover_second", 1.0)), c)
+    cover_url = upload_image(c, project.name) if c.exists() else None
+    return upload_video(video, project.name), cover_url
+
+
+def _reel_publish_job(project: Path, video: Path, r: dict, caption: str):
+    from src.instagram_publisher import publish_reel
+    progress.start("ig", ["☁️ Upload video & cover"])
+    try:
+        vurl, curl = _reel_prepare(project, video, r)
+    except Exception as e:
+        progress.fail("ig", f"Upload failed: {e}")
+        return
+    if publish_reel(vurl, caption, curl, r.get("share_to_feed", True)).get("success"):
+        archive_project("instagram", project)
+
+
+def _reel_schedule_job(project: Path, video: Path, r: dict, caption: str, when):
+    ns = "ig_automation"
+    progress.start(ns, ["☁️ Upload video & cover", "📅 Add to schedule"])
+    try:
+        progress.update(ns, 0, "active", f"{video.stat().st_size / 1_048_576:.0f} MB…")
+        vurl, curl = _reel_prepare(project, video, r)
+        progress.update(ns, 0, "done", "Uploaded")
+        igs.add(project, [], caption, [], when, extra={
+            "type": "reel", "video_url": vurl, "cover_url": curl,
+            "share_to_feed": r.get("share_to_feed", True)})
+        progress.update(ns, 1, "done", igs.local_str(igs._utc(when)))
+        progress.finish(ns, {"success": True, "scheduled": igs.local_str(igs._utc(when))})
+    except Exception:
+        progress.fail(ns, traceback.format_exc())
+
+
+def _reel_editor(project: Path, vids: list[Path], images: list[Path]):
+    from src import ig_reel
+    d = st.session_state.ig_d
+    r = d.setdefault("reel", {})
+    r.setdefault("video", vids[0].name)
+    r.setdefault("cover_mode", "frame")
+    r.setdefault("cover_second", 1.0)
+    r.setdefault("share_to_feed", True)
+    if r["video"] not in [v.name for v in vids]:
+        r["video"] = vids[0].name
+
+    h1, h2 = st.columns([5, 1])
+    h1.subheader(f"🎬 Reel · {project.name}")
+    if h2.button("← Projects", key="igr_back", width="stretch"):
+        _close()
+        st.rerun()
+
+    left, right = st.columns([2, 3], gap="large")
+    with left:
+        if len(vids) > 1:
+            names = [v.name for v in vids]
+            r["video"] = st.selectbox("Video", names, index=names.index(r["video"]), key="igr_vid")
+        video = project / r["video"]
+        info = _probe_cached(str(video), video.stat().st_mtime)
+        chk = ig_reel.checks(info)
+        with st.container(border=True):
+            st.markdown("**Pre-flight checks**")
+            for lvl, msg in chk:
+                st.markdown(f"{ {'ok': '✅', 'warn': '⚠️', 'error': '⛔'}[lvl] } {msg}")
+        if st.toggle("▶ Preview video", key="igr_prev"):
+            st.video(str(video))
+        st.markdown("**Cover**")
+        modes = ["Frame from video"] + (["Image in folder"] if images else [])
+        m = st.segmented_control("Cover source", modes, key="igr_cmode", label_visibility="collapsed",
+                                 default=modes[1] if r["cover_mode"] == "image" and images else modes[0])
+        r["cover_mode"] = "image" if m == "Image in folder" else "frame"
+        if r["cover_mode"] == "frame":
+            dur = max(0.5, info["duration"] or 60.0)
+            r["cover_second"] = st.slider("Frame at (seconds)", 0.0, float(dur),
+                                          min(float(r["cover_second"]), float(dur)), 0.1, key="igr_sec")
+            fb = _frame_cached(str(video), video.stat().st_mtime, r["cover_second"])
+            if fb:
+                st.image(fb, width=220)
+            else:
+                st.caption("Install ffmpeg on the server to preview / extract cover frames.")
+        else:
+            names = [i.name for i in images]
+            cur = r.get("cover_file") if r.get("cover_file") in names else names[0]
+            r["cover_file"] = st.selectbox("Cover image", names, index=names.index(cur), key="igr_cfile")
+            st.image(_thumb(str(project / r["cover_file"]), (project / r["cover_file"]).stat().st_mtime, 400),
+                     width=220)
+        r["share_to_feed"] = st.toggle("Also show on the profile grid & feed", r["share_to_feed"],
+                                       key="igr_feed")
+
+    with right:
+        d["title"] = st.text_area("Caption", key=_seed("igw_title", d["title"]), height=170,
+                                  placeholder="Hook first — only the first line shows before '…more'")
+        d["signature"] = st.text_area("Signature", key=_seed("igw_sig", d.get("signature", "")), height=70)
+        d["footer"] = st.text_area("Hashtags", key=_seed("igw_footer", d["footer"]), height=70)
+        caption = "\n\n".join(x for x in [d["title"].strip(), d.get("signature", "").strip(),
+                                            d["footer"].strip()] if x)
+        tags = re.findall(r"#\w+", caption)
+        st.caption(f"{len(caption):,}/2,200 characters · {len(set(t.lower() for t in tags))} hashtags (max 30)")
+        _save()
+        problems = [m for lvl, m in chk if lvl == "error"] \
+            + (["Caption is empty"] if not caption else []) \
+            + (["Caption over 2,200 characters"] if len(caption) > 2200 else []) \
+            + (["More than 30 hashtags"] if len(tags) > 30 else [])
+        for x in problems:
+            st.caption(f"⛔ {x}")
+        with st.container(border=True):
+            slot = igs.next_free_slot()
+            a1, a2, a3 = st.columns(3)
+            day = a1.date_input("Date", slot.date(), key="igr_d")
+            tm = a2.time_input("Time", slot.time(), key="igr_t", step=900)
+            if a3.button("📅 Schedule", width="stretch", disabled=bool(problems), type="primary"):
+                import datetime as _dt
+                when = _dt.datetime.combine(day, tm).replace(tzinfo=igs.tz())
+                save_entry("instagram", project.name, caption, [str(video)])
+                st.session_state.ig_automating = True
+                start_publish_thread(fn=lambda: _reel_schedule_job(project, video, dict(r), caption, when),
+                                     platform="ig_automation")
+                st.rerun()
+            st.caption("The video is uploaded now; the server posts it at that time.")
+        if st.button("🚀 Publish reel now", width="stretch", disabled=bool(problems)):
+            save_entry("instagram", project.name, caption, [str(video)])
+            st.session_state.ig_publishing = True
+            start_publish_thread(fn=lambda: _reel_publish_job(project, video, dict(r), caption),
+                                 platform="ig")
+            st.rerun()
+        st.caption("Instagram processes the video for 1–5 minutes before it goes live.")
+
+
 def _on_automation_done(result: dict):
     st.session_state.ig_automating = False
+    if result.get("scheduled"):
+        st.session_state.ig_toast = f"📅 Reel scheduled for {result['scheduled']}"
+        _close()
+        return
     if result.get("success"):
         _open(st.session_state.ig_project)
         st.session_state.ig_toast = "✅ AI copy ready — review and publish."
@@ -427,6 +571,11 @@ def render_instagram_ui():
 
     project = Path(project)
     images = media_files(project, "instagram")
+    from src.ig_reel import videos_in
+    vids = videos_in(project)
+    if vids:                                       # a video makes this a Reel project
+        _reel_editor(project, vids, images)
+        return
     d = st.session_state.ig_d
     if not _has_content(d):
         last = next((e for e in reversed(get_last_n("instagram", 50))

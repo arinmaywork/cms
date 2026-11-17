@@ -35,7 +35,7 @@ load_dotenv(ROOT / ".env")
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "streamlit.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024
-REQUIRED_DIRS = ["input_instagram", "input_behance", "input_youtube", "input_linkedin", "published",
+REQUIRED_DIRS = ["inbox/instagram", "input_instagram", "input_behance", "input_youtube", "input_linkedin", "published",
                  "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 
@@ -117,6 +117,8 @@ def _services_loop(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             ensure_worker()
+            from src.ig_inbox import process as ig_inbox
+            ig_inbox()
             from src.ig_schedule import tick as ig_tick
             ig_tick()
         except Exception as e:

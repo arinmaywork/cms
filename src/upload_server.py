@@ -39,6 +39,8 @@ def _allowed(platform: str) -> set[str]:
     exts = set(PLATFORM_EXTS[platform])
     if platform == "youtube":
         exts |= {".jpg", ".jpeg", ".png"}      # thumbnails
+    if platform == "instagram":
+        exts |= {".mp4", ".mov", ".m4v"}       # reels
     return exts
 
 

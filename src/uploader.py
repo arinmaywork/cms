@@ -67,6 +67,19 @@ def upload_image(image_path: Path, project: str | None = None) -> str:
         print(f"  [ERROR] Cloudinary API call failed: {e}")
         raise
 
+def upload_video(video_path: Path, project: str | None = None) -> str:
+    """Upload a video (chunked, resumable on Cloudinary's side) → public HTTPS URL."""
+    if not _init_cloudinary():
+        raise EnvironmentError("CLOUDINARY_URL not set in .env")
+    public_id = f"cms_uploads/{_sanitize(project or video_path.parent.name)}/{_sanitize(video_path.stem)}"
+    resp = cloudinary.uploader.upload_large(str(video_path), resource_type="video", public_id=public_id,
+                                            overwrite=True, invalidate=True, chunk_size=20_000_000)
+    url = resp.get("secure_url") or resp.get("url")
+    if not url:
+        raise RuntimeError(f"Cloudinary returned no URL: {resp}")
+    return str(url)
+
+
 def upload_multiple(image_paths: list[Path], project: str | None = None) -> list[str]:
     """Uploads multiple images sequentially."""
     urls = []
