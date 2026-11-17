@@ -27,7 +27,19 @@ from ui.folder_picker import render_project_picker
 from ui.progress_widget import live_progress, start_publish_thread
 
 CHAR_LIMIT = 2_200
-EMPTY = {"title": "", "footer": "", "urls": {}, "texts": {}, "alts": {}}
+EMPTY = {"title": "", "footer": "", "signature": "", "urls": {}, "texts": {}, "alts": {}}
+TEXT_DEFAULTS_FILE = Path(__file__).resolve().parent.parent / ".queue" / "ig_text_defaults.json"
+TEXT_DEFAULTS = {
+    "hashtags": "#photography #fujifilm #captureone #portrait #portraiture #people #life",
+    "signature": "More images @ 𝙗𝙚𝙝𝙖𝙣𝙘𝙚.𝙣𝙚𝙩/𝙖𝙧𝙞𝙣𝙢𝙖𝙮\nExplore the site @ 𝙘𝙖𝙥𝙩𝙪𝙧𝙚.𝙖𝙙𝙖𝙩𝙩𝙖.𝙞𝙣",
+}
+
+
+def _text_defaults() -> dict:
+    from src.fsutil import load_json
+    d = load_json(TEXT_DEFAULTS_FILE, {})
+    return {**TEXT_DEFAULTS, **(d if isinstance(d, dict) else {})}
+
 
 
 def _init():
@@ -43,7 +55,11 @@ def _drop_widgets():
 
 def _open(path: Path):
     st.session_state.ig_project = path
-    st.session_state.ig_d = {**EMPTY, **load_draft(path).get("instagram", {})}
+    saved = load_draft(path).get("instagram")
+    st.session_state.ig_d = {**EMPTY, **(saved or {})}
+    if saved is None:                       # brand-new project → prefill your defaults
+        td = _text_defaults()
+        st.session_state.ig_d.update(footer=td["hashtags"], signature=td["signature"])
     _drop_widgets()
 
 
@@ -300,6 +316,64 @@ def _schedule_panel():
         st.caption("Select rows to post now, move, or remove. Failed posts retry 3× (10 min apart).")
 
 
+@st.cache_data(ttl=600, show_spinner="Loading your posts…")
+def _media_cached() -> list:
+    from src.instagram_publisher import fetch_recent_media
+    return fetch_recent_media(60)
+
+
+def _past_posts():
+    import pandas as pd
+    from datetime import datetime, timezone
+    with st.expander("📊 Past posts & consistency"):
+        if not st.toggle("Load from Instagram", key="ig_past_on"):
+            return
+        try:
+            media = _media_cached()
+        except Exception as e:
+            st.error(f"Couldn't load posts: {e}")
+            return
+        if not media:
+            st.info("No posts found.")
+            return
+        ts = sorted(datetime.fromisoformat(m["timestamp"].replace("+0000", "+00:00")) for m in media)
+        now = datetime.now(timezone.utc)
+        gaps = [(b - a).days for a, b in zip(ts, ts[1:])]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Posts, last 30 days", sum((now - t).days < 30 for t in ts))
+        m2.metric("Avg days between", f"{sum(gaps) / len(gaps):.1f}" if gaps else "—")
+        m3.metric("Longest gap (days)", max(gaps) if gaps else "—")
+        m4.metric("Days since last post", (now - ts[-1]).days)
+        wk = pd.Series(1, index=pd.to_datetime(ts)).resample("W").sum().tail(16)
+        st.bar_chart(wk.rename("posts per week"), height=160)
+        cols = st.columns(4)
+        for i, m in enumerate(media[:24]):
+            with cols[i % 4].container(border=True):
+                img = m.get("thumbnail_url") or m.get("media_url")
+                if img:
+                    st.image(img, width="stretch")
+                st.caption(f"{m['timestamp'][:10]} · ❤️ {m.get('like_count', '–')} · 💬 "
+                           f"{m.get('comments_count', '–')} · {m.get('media_type', '').title()}")
+                with st.popover("Details"):
+                    st.text((m.get("caption") or "(no caption)")[:2200])
+                    st.link_button("Open on Instagram ↗", m.get("permalink", "https://instagram.com"))
+        if st.button("🔄 Refresh", key="ig_past_ref"):
+            _media_cached.clear()
+            st.rerun()
+
+
+def _defaults_editor():
+    from src.fsutil import atomic_write_json
+    with st.expander("✏️ Defaults for new posts (hashtags & signature)"):
+        td = _text_defaults()
+        with st.form("ig_defaults"):
+            h = st.text_area("Default hashtags", td["hashtags"], height=70)
+            sgn = st.text_area("Default signature", td["signature"], height=70)
+            if st.form_submit_button("Save defaults"):
+                atomic_write_json(TEXT_DEFAULTS_FILE, {"hashtags": h.strip(), "signature": sgn.strip()})
+                st.toast("Saved — applies to newly opened projects")
+
+
 def _on_automation_done(result: dict):
     st.session_state.ig_automating = False
     if result.get("success"):
@@ -343,6 +417,8 @@ def render_instagram_ui():
 
     project = st.session_state.ig_project
     if not project or not Path(project).exists():
+        _past_posts()
+        _defaults_editor()
         picked = render_project_picker("instagram")
         if picked:
             _open(picked)
@@ -405,6 +481,8 @@ def render_instagram_ui():
                 "Caption line (all slides are joined into ONE post caption)", key=_seed(f"igw_cap_{img.name}", d["texts"].get(img.name, "")), height=90)
             d["alts"][img.name] = st.text_input(
                 "Alt text", key=_seed(f"igw_alt_{img.name}", d["alts"].get(img.name, "")))
+    d["signature"] = st.text_area("Signature (added after the caption lines, before hashtags)",
+                                  key=_seed("igw_sig", d.get("signature", "")), height=70)
     d["footer"] = st.text_area("Hashtags", key=_seed("igw_footer", d["footer"]))
 
     with st.expander("Advanced: image URLs (filled automatically by Automate)"):
@@ -415,7 +493,7 @@ def render_instagram_ui():
 
     caption = "\n\n".join(x for x in [d["title"].strip()]
                           + [d["texts"].get(img.name, "").strip() for img in images]
-                          + [d["footer"].strip()] if x)
+                          + [d.get("signature", "").strip(), d["footer"].strip()] if x)
     urls = [d["urls"].get(img.name, "").strip() for img in images]
     missing = sum(1 for u in urls if not u.startswith("http"))
 

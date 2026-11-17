@@ -128,7 +128,7 @@ def _create_image_container(
         params["caption"] = caption
 
     if alt_text:
-        params["accessibility_caption"] = alt_text
+        params["alt_text"] = alt_text[:1000]   # official field since Mar 2025 (max 1000 chars)
 
     data = _post(f"{GRAPH_BASE}/{ig_user_id}/media", params)
     return data["id"]
@@ -156,6 +156,21 @@ def _publish_container(ig_user_id: str, access_token: str, container_id: str) ->
         {"creation_id": container_id, "access_token": access_token},
     )
     return data["id"]
+
+
+# ── Past posts (read-only) ────────────────────────────────────────────────────
+def fetch_recent_media(limit: int = 60) -> list[dict[str, Any]]:
+    """Your latest posts with basic stats. ~1 call per 25 posts."""
+    c = _creds()
+    fields = ("id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,"
+              "like_count,comments_count")
+    out: list[dict[str, Any]] = []
+    url, params = f"{GRAPH_BASE}/{c['ig_user_id']}/media", {"fields": fields, "limit": 25}
+    while url and len(out) < limit:
+        data = _get(url, {**params, "access_token": c["access_token"]})
+        out += data.get("data", [])
+        url, params = data.get("paging", {}).get("next"), {}
+    return out[:limit]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
