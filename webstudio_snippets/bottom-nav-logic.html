@@ -1,0 +1,131 @@
+<script type="module">
+
+// Bottom nav logic. The nav is a Slot (Home, Story page, and inside the overlay frame), so this runs once per copy:
+// everything is delegated from document and a re-run replaces the previous run's listeners.
+const $ = (s) => document.querySelector(s);
+const de = document.documentElement;
+if (window.__navAbort) window.__navAbort.abort();
+const ac = new AbortController();
+window.__navAbort = ac;
+const { signal } = ac;
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const cards = () => [...document.querySelectorAll('.card')];
+const cats = (c) => (c.dataset.category || '').toLowerCase().split(/\s+/).filter(Boolean);
+
+// every nav copy carries its own mode (CSS shows the right lead icon / centre button per copy): the overlay copy follows the
+// route, the page copy keeps showing the page underneath while the overlay is open, so the crossfade never flashes the wrong icons.
+// <html data-nav-ov="true"> only while the overlay is open and not leaving: it fades the page copy out; closing flips it back.
+let pendingHome = 0; // after the overlay unmounts, history.back() is still in flight: the route is not Home yet
+const routeMode = () => { const p = location.pathname; return p === '/' ? 'home' : /^\/about\/?$/.test(p) ? 'about' : 'story'; };
+const sync = () => {
+  const closing = !!$('.so-content[data-state="closed"]');
+  const ov = !!$('.so-panel');
+  if (closing) pendingHome = Date.now() + 800;
+  const route = routeMode();
+  const pageMode = ov || closing || (Date.now() < pendingHome && route !== 'home') ? 'home' : route;
+  de.dataset.nav = pageMode;
+  de.dataset.navOv = ov && !closing;
+  document.querySelectorAll('.bottom-nav').forEach((nav) => {
+    const inOv = !!nav.closest('.so-content');
+    if (inOv && closing) return; // leaving: the overlay copy keeps its layout while it fades out
+    const mode = inOv ? route : pageMode;
+    nav.dataset.mode = mode;
+    nav.dataset.ov = inOv;
+    const lead = nav.querySelector('.bn-lead');
+    if (lead) {
+      lead.setAttribute('href', mode === 'home' ? '/about' : '/');
+      lead.setAttribute('aria-label', mode === 'home' ? 'About' : inOv ? 'Close' : 'Home');
+    }
+  });
+};
+let queued = false;
+const soon = () => queued || (queued = requestAnimationFrame(() => { queued = false; sync(); }));
+sync();
+window.addEventListener('popstate', soon, { signal });
+const mo = new MutationObserver(soon); // overlay mount/unmount + Radix flipping data-state to "closed" (exit starts)
+mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+signal.addEventListener('abort', () => mo.disconnect());
+
+// lead button: on Home it is the About link (the overlay logic opens it). Elsewhere it is Close inside the overlay, or the logo -> Home
+// on a full page. The router Link ignores a rewritten href, so we navigate ourselves.
+document.addEventListener('click', (e) => {
+  const lead = e.target.closest('.bn-lead');
+  const nav = lead && lead.closest('.bottom-nav');
+  if (!nav || nav.dataset.mode === 'home' || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (nav.dataset.ov === 'true') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); else location.assign('/');
+}, { capture: true, signal });
+
+// share: native sheet where available, otherwise copy the link
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.nb-share');
+  if (!b) return;
+  const data = { title: document.title, url: location.href };
+  if (navigator.share) return navigator.share(data).catch(() => {});
+  navigator.clipboard.writeText(data.url).then(() => {
+    const t = b.querySelector('.nb-txt');
+    const was = t.textContent;
+    t.textContent = 'Copied';
+    setTimeout(() => (t.textContent = was), 1600);
+  }).catch(() => {});
+}, { signal });
+
+// theme
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.bn-theme')) return;
+  const dark = document.body.classList.toggle('dark-mode');
+  try { dark ? localStorage.setItem('theme', 'dark-mode') : localStorage.removeItem('theme'); } catch {}
+}, { signal });
+
+// Filter menu = the items you arrange in the builder (order + label) plus whatever categories the cards carry (tags[0] from the CMS):
+// - an item whose category no card has any more (renamed/removed in the CMS) is hidden, "All" always stays
+// - a category with no item yet is appended at the end (reorder/label it in the builder to control where it sits)
+document.querySelectorAll('.nf-menu').forEach((menu) => {
+  const live = new Set(cards().flatMap(cats));
+  if (!live.size) return; // not on the gallery (story page copy of the nav): leave the menu alone
+  const items = [...menu.children];
+  items.forEach((li) => { li.style.display = li.dataset.filter === 'all' || live.has(li.dataset.filter) ? '' : 'none'; });
+  const have = new Set(items.map((li) => li.dataset.filter));
+  live.forEach((n) => {
+    if (have.has(n)) return;
+    const li = items[items.length - 1].cloneNode(true);
+    li.dataset.filter = n; li.textContent = cap(n); li.setAttribute('aria-selected', 'false'); li.style.display = '';
+    menu.append(li);
+  });
+});
+
+let filterTimer;
+const setOpen =(nf, v) => { nf.dataset.open = v; nf.querySelector('.nf-trigger').setAttribute('aria-expanded', v); };
+const nfOf = (e) => e.target.closest && e.target.closest('.nf');
+// desktop: hover; touch/pen: open on touch down; keyboard: Enter/Space; Esc / outside tap closes
+document.addEventListener('pointerover', (e) => { const nf = nfOf(e); if (nf && e.pointerType === 'mouse') setOpen(nf, true); }, { signal });
+document.addEventListener('pointerout', (e) => { const nf = nfOf(e); if (nf && e.pointerType === 'mouse' && !nf.contains(e.relatedTarget)) setOpen(nf, false); }, { signal });
+document.addEventListener('pointerdown', (e) => {
+  const nf = nfOf(e);
+  if (nf && e.pointerType !== 'mouse' && e.target.closest('.nf-trigger')) setOpen(nf, nf.dataset.open !== 'true');
+  document.querySelectorAll('.nf[data-open="true"]').forEach((o) => o === nf || setOpen(o, false));
+}, { signal });
+document.addEventListener('keydown', (e) => e.key === 'Escape' && document.querySelectorAll('.nf').forEach((o) => setOpen(o, false)), { signal });
+document.addEventListener('click', (e) => {
+  const nf = nfOf(e);
+  if (!nf) return;
+  if (e.target.closest('.nf-trigger')) { if (e.detail === 0) setOpen(nf, nf.dataset.open !== 'true'); return; }
+  const li = e.target.closest('li');
+  if (!li) return;
+  const f = li.dataset.filter;
+  document.querySelectorAll('.nf-label').forEach((l) => (l.textContent = li.textContent.trim()));
+  document.querySelectorAll('.nf-menu li').forEach((o) => o.setAttribute('aria-selected', o.dataset.filter === f));
+  // fade everything out, then (while invisible) swap which cards exist and let card-in fade them back in.
+  // Hiding first would leave the page empty for the gap: only the non-card "Me and Socials" block remained.
+  const all = cards();
+  clearTimeout(filterTimer);
+  all.forEach((c) => c.classList.add('out'));
+  filterTimer = setTimeout(() => all.forEach((c) => {
+    c.classList.toggle('hide', !(f === 'all' || cats(c).includes(f)));
+    c.classList.remove('out');
+  }), 190);
+  setOpen(nf, false);
+}, { signal });
+
+</script>

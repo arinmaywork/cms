@@ -17,13 +17,14 @@ import streamlit as st
 
 import src.progress as progress
 import src.r2 as r2
-from src.ai_generator import generate_alt_text, generate_story_draft
+import src.seo as seo
+from src.ai_generator import generate_story_draft, generate_website_alt
 from src.projects import ARCHIVE_DIR, INPUT_DIRS, archive_project, load_draft, media_files, save_draft
 from ui.folder_picker import render_project_picker
 from ui.progress_widget import live_progress, start_publish_thread
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-DESC_MAX = 160
+DESC_MAX = seo.DESC_MAX
 
 
 def _init():
@@ -57,6 +58,47 @@ def _published() -> list[dict]:
     return r2.list_stories()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _site() -> dict:
+    try:
+        return r2.get_site()
+    except Exception:
+        return {}
+
+
+def _site_panel():
+    """Site-wide texts the Webstudio home/About pages read from site.json (page <title>, description)."""
+    site = _site()
+    with st.expander("🔎 Site & search settings (home / About titles, base location)", expanded=not site):
+        st.caption("Saved to `site.json` in R2. In Webstudio, bind the Home and About page title/description "
+                   "to this file (see SEO_SETUP.md) so you change them here, not in the builder.")
+        vals = {}
+        for key, label, ph in (
+                ("site_name", "Site name", "Captured by Arinmay"),
+                ("home_title", "Home page title (≤ 60 chars)", "Arinmay Datta — street, portrait & nature photography from <city>"),
+                ("home_description", f"Home page description (≤ {DESC_MAX}, one full sentence)", ""),
+                ("about_title", "About page title", "About Arinmay Datta — photographer based in <city>"),
+                ("about_description", f"About page description (≤ {DESC_MAX})", ""),
+                ("location", "Base location (default for new stories)", "<city>, <country>"),
+                ("author", "Photographer name", "Arinmay Datta")):
+            vals[key] = st.text_input(label, value=site.get(key, ""), key=f"wss_{key}", placeholder=ph)
+        for k in ("home_title", "about_title"):
+            if len(vals[k]) > 60:
+                st.caption(f"⚠️ {k} is {len(vals[k])} chars; Google shows ~60.")
+        for k in ("home_description", "about_description"):
+            v = vals[k].strip()
+            if v and (len(v) > DESC_MAX or not v.endswith((".", "!", "?"))):
+                st.caption(f"⚠️ {k}: use one full sentence ≤ {DESC_MAX} chars ending in a period.")
+        if st.button("💾 Save site settings", key="wss_save"):
+            try:
+                r2.put_site({**site, **vals})
+                _site.clear()
+                st.session_state.ws_toast = "✅ site.json saved (sites update within ~10 min)"
+            except Exception as e:
+                st.session_state.ws_error = f"Save failed: {e}"
+            st.rerun()
+
+
 def _ai_job(p: Path, names: list[str], notes: str):
     progress.start("ws_ai", ["✍️ Writing the story", "🖼️ Alt text for each image"])
     try:
@@ -68,8 +110,10 @@ def _ai_job(p: Path, names: list[str], notes: str):
         alts = d.setdefault("alts", {})
         for i, n in enumerate(names, 1):
             progress.update("ws_ai", 1, "active", f"{i}/{len(names)}")
-            if not alts.get(n, "").strip():
-                alts[n] = generate_alt_text(p / n)
+            cur = alts.get(n, "").strip()
+            if not cur or cur.lower() == d.get("title", "").strip().lower():
+                alts[n] = generate_website_alt(p / n, d.get("title", ""), " ".join(
+                    x for x in (notes, d.get("location", "")) if x))
                 _save(p, d)
         progress.update("ws_ai", 1, "done")
         progress.finish("ws_ai", {"success": True})
@@ -92,6 +136,7 @@ def _publish_job(p: Path, slug: str, d: dict, names: list[str]):
           "specs": d.get("specs", {}).get(n, "").strip()}
          for n in names],
         location=d.get("location", "").strip(),
+        summary=d.get("summary", "").strip(), captured=d.get("captured", "").strip(),
         tags=[t.strip() for t in d.get("tags", "").split(",") if t.strip()],
         published_at=d.get("published_at"), progress=tick)
     progress.update("ws", 1, "done")
@@ -148,14 +193,18 @@ def _edit_view(slug: str):
 
     title = field("wse_title", "Title", s["title"])
     desc = field("wse_description", f"Description (search results & link previews, max {DESC_MAX})", s["description"])
-    c1, c2, c3 = st.columns(3)
+    summary = field("wse_summary", "Summary — what is in the photo (e.g. an elderly man and his grandson)", s.get("summary", ""))
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        loc = field("wse_location", "Location (text only — no coordinates)", s.get("location", ""))
+        loc = field("wse_location", "Location (city, country — text only)", s.get("location", ""))
     with c2:
-        tags = field("wse_tags", "Tags (comma-separated; the first one is the home-page filter)", ", ".join(s.get("tags", [])))
+        captured = field("wse_captured", "Captured (year, e.g. 2023)", s.get("captured", ""))
     with c3:
+        tags = field("wse_tags", "Tags (comma-separated; first = home filter)", ", ".join(s.get("tags", [])))
+    with c4:
         st.session_state.setdefault("wse_date", datetime.date.fromisoformat(s["published_at"]))
-        pub_date = st.date_input("Date", key="wse_date")
+        pub_date = st.date_input("Published", key="wse_date")
+    st.caption("Shown under the title: " + (seo.build_subtitle(summary, loc, captured) or "—"))
     st.session_state.setdefault("wse_body", s.get("body_md", ""))
     body = st.text_area("Story (Markdown)", key="wse_body", height=260)
 
@@ -177,18 +226,19 @@ def _edit_view(slug: str):
                            "specs": tc.text_input("Specs line", key=f"wse_spc_{n}"),
                            "caption": tc.text_input("Caption (optional)", key=f"wse_cap_{n}")})
 
-    problems = ([] if images else ["Keep at least one image"]) \
-        + ([] if title.strip() else ["Title is empty"]) \
-        + ([] if desc.strip() else ["Description is empty"]) \
-        + ([f"Description too long ({len(desc)}/{DESC_MAX})"] if len(desc) > DESC_MAX else []) \
-        + (["Some images are missing alt text"] if any(not i["alt"].strip() for i in images) else [])
+    bad, warn = seo.check(title, desc, [(f"Image {k}", i["alt"]) for k, i in enumerate(images, 1)],
+                          loc, summary, captured)
+    problems = ([] if images else ["Keep at least one image"]) + bad
     for x in problems:
+        st.caption(f"⛔ {x}")
+    for x in warn:
         st.caption(f"⚠️ {x}")
     if st.button("💾 SAVE & REPUBLISH", type="primary", width="stretch", disabled=bool(problems)):
         try:
             r2.update_story(slug, {
                 "title": title.strip(), "description": desc.strip(), "body_md": body.strip(),
-                "location": loc.strip(), "tags": [t.strip() for t in tags.split(",") if t.strip()],
+                "location": loc.strip(), "summary": summary.strip(), "captured": captured.strip(),
+                "tags": [t.strip() for t in tags.split(",") if t.strip()],
                 "published_at": pub_date.isoformat()},
                 [{**i, "alt": i["alt"].strip(), "specs": i["specs"].strip(), "caption": i["caption"].strip()}
                  for i in images])
@@ -262,6 +312,7 @@ def render_website_ui():
             _open(picked)
             st.rerun()
         try:
+            _site_panel()
             _published_panel()
         except Exception as e:
             st.caption(f"Couldn't load published stories: {e}")
@@ -290,8 +341,8 @@ def render_website_ui():
         cols[i % 6].image(str(p / n), width="stretch")
 
     notes = st.text_input("🗒️ AI context", key="wsw_notes",
-                          placeholder="where, when, what the story is about — facts the AI shouldn't invent")
-    st.caption("Fields below are always editable; the AI button fills title, description, story and any empty alt texts.")
+                          placeholder="where (city), when (year), who/what — facts the AI must not invent")
+    st.caption("Fields below are always editable; the AI button fills title, summary, description, story and any empty alt texts. Put the city and year in the AI context so they're used, not guessed.")
     ai = st.button("🤖 Draft with AI (replaces title, description and story)", disabled=not names)
 
     def field(key, label, default="", **kw):
@@ -301,15 +352,19 @@ def render_website_ui():
     title = field("wsw_title", "Title")
     slug = field("wsw_slug", "URL slug", _slugify(p.name), help="Becomes /stories/<slug>. Re-using a published slug updates that story.")
     desc = field("wsw_description", f"Description (search results & link previews, max {DESC_MAX})")
-    c1, c2, c3 = st.columns(3)
+    summary = field("wsw_summary", "Summary — what is in the photo (e.g. an elderly man and his grandson)")
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        loc = field("wsw_location", "Location (text only — no coordinates)")
+        loc = field("wsw_location", "Location (city, country — text only)", _site().get("location", ""))
     with c2:
-        tags = field("wsw_tags", "Tags (comma-separated)")
+        captured = field("wsw_captured", "Captured (year, e.g. 2023)")
     with c3:
+        tags = field("wsw_tags", "Tags (comma-separated)")
+    with c4:
         st.session_state.setdefault("wsw_published_at", datetime.date.fromisoformat(
             d.get("published_at") or datetime.date.today().isoformat()))
-        pub_date = st.date_input("Date", key="wsw_published_at")
+        pub_date = st.date_input("Published", key="wsw_published_at")
+    st.caption("Shown under the title: " + (seo.build_subtitle(summary, loc, captured) or "—"))
     st.session_state.setdefault("wsw_body_md", d.get("body_md", ""))
     body = st.text_area("Story (Markdown)", key="wsw_body_md", height=260)
 
@@ -326,7 +381,7 @@ def render_website_ui():
             caps[n] = tc.text_input("Caption (optional)", key=f"wsw_cap_{n}")
 
     cur = {"names": names, "title": title, "slug": slug, "description": desc, "location": loc,
-           "tags": tags, "published_at": pub_date.isoformat(), "body_md": body, "alts": alts, "captions": caps, "specs": specs}
+           "summary": summary, "captured": captured, "tags": tags, "published_at": pub_date.isoformat(), "body_md": body, "alts": alts, "captions": caps, "specs": specs}
     _save(p, cur)
 
     if ai:
@@ -334,14 +389,13 @@ def render_website_ui():
         start_publish_thread(fn=lambda: _ai_job(p, names, notes), platform="ws_ai")
         st.rerun()
 
+    bad, warn = seo.check(title, desc, [(n, alts[n]) for n in names], loc, summary, captured)
     problems = ([] if names else ["Pick at least one image"]) \
-        + ([] if title.strip() else ["Title is empty"]) \
         + ([] if SLUG_RE.match(slug) else ["Slug must be lowercase letters, digits and dashes (e.g. iceland-2025)"]) \
-        + ([] if desc.strip() else ["Description is empty"]) \
-        + ([f"Description too long ({len(desc)}/{DESC_MAX})"] if len(desc) > DESC_MAX else []) \
-        + ([f"{sum(1 for n in names if not alts[n].strip())} image(s) missing alt text"]
-           if any(not alts[n].strip() for n in names) else [])
+        + bad
     for x in problems:
+        st.caption(f"⛔ {x}")
+    for x in warn:
         st.caption(f"⚠️ {x}")
     try:
         if any(s["slug"] == slug for s in _published()):

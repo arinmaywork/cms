@@ -31,6 +31,8 @@ from urllib.parse import urlparse
 
 from PIL import Image
 
+from src import seo
+
 IMMUTABLE = "public, max-age=31536000, immutable"
 JSON_CACHE = "public, max-age=60"
 SCHEMA = 1
@@ -182,8 +184,10 @@ def _get_json(key: str, default):
 # ── stories ──────────────────────────────────────────────────────────────────
 def publish_story(slug: str, title: str, description: str, body_md: str, images: list[dict],
                   location: str = "", tags: list[str] | None = None,
-                  published_at: str | None = None, progress=None) -> dict:
-    """images: [{path, alt, caption}] in display order; the first is the cover."""
+                  published_at: str | None = None, progress=None,
+                  summary: str = "", captured: str = "") -> dict:
+    """images: [{path, alt, caption}] in display order; the first is the cover.
+    summary = what is in the photo, captured = when (free text); see src/seo.py."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     out = []
     for n, im in enumerate(images, 1):
@@ -196,9 +200,11 @@ def publish_story(slug: str, title: str, description: str, body_md: str, images:
     story = {
         "schema": SCHEMA, "slug": slug, "title": title, "description": description,
         "body_md": body_md, "location": location, "tags": tags or [],
+        "summary": summary, "captured": captured,
         "published_at": published_at or now[:10], "updated_at": now,
         "cover": out[0], "images": out,
     }
+    seo.derive(story, get_site().get("site_name", ""))
     put_json(f"stories/{slug}.json", story)
     _index_upsert(story)
     return story
@@ -207,8 +213,8 @@ def publish_story(slug: str, title: str, description: str, body_md: str, images:
 def _index_upsert(story: dict) -> None:
     # ponytail: read-modify-write, safe for one publisher; add locking if CMS becomes multi-user
     idx = _get_json("stories/index.json", {"schema": SCHEMA, "stories": []})
-    entry = {k: story[k] for k in ("slug", "title", "description", "location", "tags",
-                                    "published_at", "updated_at")}
+    entry = {k: story.get(k, "") for k in ("slug", "title", "description", "location", "tags",
+                                           "summary", "captured", "subtitle", "published_at", "updated_at")}
     entry["image_count"] = len(story["images"])
     entry["cover"] = {k: story["cover"][k] for k in ("url", "width", "height", "alt")}
     idx["stories"] = sorted([s for s in idx["stories"] if s["slug"] != story["slug"]] + [entry],
@@ -228,7 +234,8 @@ def update_story(slug: str, fields: dict, images: list[dict] | None = None) -> d
     if story is None:
         raise KeyError(f"story {slug!r} is not published")
     story.update({k: v for k, v in fields.items()
-                  if k in ("title", "description", "body_md", "location", "tags", "published_at")})
+                  if k in ("title", "description", "body_md", "location", "tags", "published_at",
+                                "summary", "captured")})
     if images is not None:
         by_url = {im["url"]: im for im in story["images"]}
         story["images"] = [{**by_url[e["url"]], **{k: e[k] for k in ("alt", "caption", "specs") if k in e}}
@@ -237,9 +244,28 @@ def update_story(slug: str, fields: dict, images: list[dict] | None = None) -> d
             raise ValueError("a story needs at least one image")
         story["cover"] = story["images"][0]
     story["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    seo.derive(story, get_site().get("site_name", ""))
     put_json(f"stories/{slug}.json", story)
     _index_upsert(story)
     return story
+
+
+# ── site-wide settings (home/about titles, base location) ───────────────────
+SITE_FIELDS = ("site_name", "home_title", "home_description", "about_title", "about_description",
+               "location", "author", "same_as")
+
+
+def get_site() -> dict:
+    """site.json: texts the Webstudio home/About pages bind to (page <title>/description), edited in the CMS."""
+    return _get_json("site.json", {})
+
+
+def put_site(fields: dict) -> dict:
+    site = {k: (fields[k] if k == "same_as" else str(fields[k]).strip()) for k in SITE_FIELDS if k in fields}
+    site["schema"] = SCHEMA
+    site["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    put_json("site.json", site)
+    return site
 
 
 def list_stories() -> list[dict]:
@@ -267,7 +293,8 @@ def export_story(slug: str, dest: Path) -> list[str]:
         alts[name], caps[name], specs[name] = im.get("alt", ""), im.get("caption", ""), im.get("specs", "")
     save_draft(dest, {"website": {
         "names": names, "title": s["title"], "slug": slug, "description": s["description"],
-        "location": s.get("location", ""), "tags": ", ".join(s.get("tags", [])),
+        "location": s.get("location", ""), "summary": s.get("summary", ""), "captured": s.get("captured", ""),
+        "tags": ", ".join(s.get("tags", [])),
         "published_at": s["published_at"], "body_md": s.get("body_md", ""),
         "alts": alts, "captions": caps, "specs": specs}})
     return names

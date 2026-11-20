@@ -47,3 +47,7 @@ input_youtube/*
 .secrets/
 published/
 archive/
+
+# SEO backfill working files
+seo_review.csv
+seo_backup/

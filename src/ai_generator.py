@@ -732,22 +732,46 @@ def generate_linkedin_text(project_name: str, image_path: Path | None = None,
 _WS_SYSTEM = (
     "You write photo-story pages for a photographer's portfolio website. First person, "
     "specific and calm — no clichés, no marketing speak, no emoji. Reply with ONLY a JSON "
-    'object: {"title": short evocative title (max 60 chars), "description": one-sentence '
-    'summary for search results (max 155 chars), "body_md": the story in Markdown, 3-5 '
+    'object: {"title": short evocative title (max 60 chars), '
+    '"summary": plain-language phrase saying what is IN the photo, lower-case, no trailing '
+    'period, 4-12 words, e.g. "an elderly man and his grandson on a village road", '
+    '"description": ONE complete sentence for search results, 110-155 chars, ending with a '
+    'period, plainly saying what the photo shows (and where, if the notes say), never cut off, '
+    '"body_md": the story in Markdown, 3-5 '
     "short paragraphs (150-300 words), plain paragraphs only — no headings, no images, "
-    "no lists}. Never invent facts that are not in the notes or visible in the photo."
+    "no lists}. Never invent facts (places, dates, names) that are not in the notes or visible in the photo."
+)
+
+_WS_ALT_SYSTEM = (
+    "You write alt text for photographs on a portfolio website. Describe what is actually in the "
+    "photo for someone who cannot see it: subject, action, setting, light/mood where it matters. "
+    "One sentence, 60-140 characters, no 'photo of' / 'image of', and do NOT just repeat the title. "
+    "Only mention a place or time if it is given in the context. Output the alt text only."
 )
 
 
+def generate_website_alt(image_path: Path, title: str = "", context: str = "") -> str:
+    """Descriptive alt text for a website photo (title/context only steer it; they are not copied)."""
+    prompt = (f"Story title (artistic, do not repeat it): {title}\n" if title else "") \
+        + (f"Context: {context}\n" if context else "") + "Write the alt text."
+    text, _ = _call_vision(_WS_ALT_SYSTEM, prompt, Path(image_path), max_tokens=120)
+    return text.strip().strip('"').strip()
+
+
 def generate_story_draft(project_name: str, image_path: Path, extra_notes: str = "") -> dict:
-    """→ {title, description, body_md} drafted from one photo + the author's notes."""
+    """→ {title, summary, description, body_md} drafted from one photo + the author's notes."""
     import json
+    from src.seo import sentence
     prompt = (f"Project: {project_name}\n"
               + (f"Notes from the author: {extra_notes}\n" if extra_notes else "")
               + "\nWrite the story page JSON. Base it on what you see in the photo.")
-    text, _ = _call_vision(_WS_SYSTEM, prompt, Path(image_path), max_tokens=1500)
+    text, _ = _call_vision(_WS_SYSTEM, prompt, Path(image_path), max_tokens=1800)
     try:
         d = json.loads(text[text.index("{"):text.rindex("}") + 1])
-        return {k: str(d.get(k, "")).strip() for k in ("title", "description", "body_md")}
     except ValueError:
         raise RuntimeError(f"AI returned unreadable JSON: {text[:200]}")
+    out = {k: str(d.get(k, "")).strip() for k in ("title", "summary", "description", "body_md")}
+    out["summary"] = out["summary"].rstrip(".")
+    if len(out["description"]) > 160 or out["description"].endswith(("...", "…")):
+        out["description"] = sentence(out["description"]) or sentence(out["body_md"])
+    return out
