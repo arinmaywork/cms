@@ -362,6 +362,19 @@ def _posts_hub():
                         st.caption(" ".join(tags))
                         st.link_button("Open on Instagram ↗", p["permalink"] or "https://instagram.com")
         with t3:
+            with st.container(border=True):
+                st.markdown("**Bulk import:** export every photo you've posted (extras are fine; "
+                            "~2048 px JPEG is plenty), then copy them to the VM:")
+                st.code('rsync -avP ~/Exports/ig/ ubuntu@143.47.244.207:~/cms-local/published/instagram/_import/',
+                        language="bash")
+                st.caption("Then click Sync — each photo is matched to its post by image fingerprint "
+                           "and filed into published/instagram/<date>_<post>/ in slide order.")
+                left = arch.get("import_leftovers", [])
+                if left:
+                    st.warning(f"{len(left)} exported photo(s) matched no post (probably never posted).")
+                    if st.button(f"🗑 Delete the {len(left)} unmatched export(s)", key="ig_left_del"):
+                        st.toast(f"Deleted {ia.delete_leftovers()} file(s)")
+                        st.rerun()
             miss = ia.missing(arch)
             if not miss:
                 st.success("Every posted image has its original on the server ✓")

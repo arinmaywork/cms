@@ -27,6 +27,8 @@ ARCHIVE = ROOT / "history" / "ig_archive.json"
 MD = ROOT / "history" / "instagram_posts.md"
 LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes.json"
 THUMBS = ROOT / "history" / "ig_thumbs"
+IMPORT = ROOT / "published" / "instagram" / "_import"   # drop bulk exports here
+POSTS_DIR = ROOT / "published" / "instagram"
 NS = "ig_archive"
 DUP_DISTANCE = 8          # Hamming distance (of 64 bits) that counts as "same photo"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -168,8 +170,10 @@ def sync() -> dict:
             for s in p["slides"]:
                 if s.get("hash"):
                     best = min(local.items(), key=lambda kv: distance(kv[1], s["hash"]), default=None)
-                    s["file"] = (Path(best[0]).name if best and distance(best[1], s["hash"]) <= DUP_DISTANCE
-                                 else s.get("file", ""))
+                    ok = best and distance(best[1], s["hash"]) <= DUP_DISTANCE
+                    s["file"] = Path(best[0]).name if ok else s.get("file", "")
+                    s["path"] = best[0] if ok else s.get("path", "")
+        arch["import_leftovers"] = _organize(posts)
         # thumbnails for older entries whose originals are missing (to recognise them)
         by_id = {m["id"]: m for m in media}
         for p in posts.values():
@@ -194,6 +198,46 @@ def sync() -> dict:
     except Exception as e:
         progress.fail(NS, str(e))
         return {"success": False, "error": str(e)}
+
+
+def _organize(posts: dict) -> list[str]:
+    """File matched exports from _import/ into one folder per post (slides in order).
+    Returns the exports that matched no post."""
+    import shutil
+    if not IMPORT.exists():
+        return []
+    moved: dict[str, str] = {}
+    for p in posts.values():
+        folder = POSTS_DIR / f"{p['date'][:10]}_{p['id'][-6:]}"
+        for i, s in enumerate(p["slides"]):
+            src = s.get("path", "")
+            if not src or Path(IMPORT) not in Path(src).parents:
+                continue
+            dest = folder / f"{i + 1:02d}_{Path(src).name}"
+            folder.mkdir(parents=True, exist_ok=True)
+            if Path(src).exists():
+                shutil.move(src, dest)
+                moved[src] = str(dest)
+            elif src in moved and not dest.exists():      # same photo used in two posts
+                shutil.copy2(moved[src], dest)
+            s["path"], s["file"] = str(dest), dest.name
+    leftovers = sorted(str(f) for f in IMPORT.rglob("*") if f.is_file()
+                       and f.suffix.lower() in IMG_EXTS)
+    if moved:
+        print(f"  [ig:archive] filed {len(moved)} export(s) into per-post folders; "
+              f"{len(leftovers)} unmatched left in _import")
+    return leftovers
+
+
+def delete_leftovers() -> int:
+    from src.fsutil import load_json
+    n = 0
+    for f in load_json(ARCHIVE, {}).get("import_leftovers", []):
+        fp = Path(f)
+        if fp.exists() and Path(IMPORT) in fp.parents:
+            fp.unlink()
+            n += 1
+    return n
 
 
 def write_md(arch: dict | None = None) -> Path:
