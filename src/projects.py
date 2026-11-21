@@ -26,13 +26,14 @@ INPUT_DIRS  = {
     "behance":   ROOT / "input_behance",
     "youtube":   ROOT / "input_youtube",
     "linkedin":  ROOT / "input_linkedin",
+    "week":      ROOT / "input_week",        # week-planner batches
     "website":   ROOT / "input_website",
 }
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm",
               ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
 PLATFORM_EXTS = {"instagram": IMAGE_EXTS, "behance": IMAGE_EXTS, "youtube": VIDEO_EXTS,
-                 "linkedin": IMAGE_EXTS, "website": {".jpg", ".jpeg"}}  # uploaded as-is, never converted
+                 "linkedin": IMAGE_EXTS, "week": IMAGE_EXTS | {".mp4", ".mov", ".m4v"}, "website": {".jpg", ".jpeg"}}  # uploaded as-is, never converted
 DRAFT_FILE = ".cms.json"
 BUSY_SECONDS = 20   # files modified this recently = still being copied
 

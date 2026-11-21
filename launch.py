@@ -35,7 +35,7 @@ load_dotenv(ROOT / ".env")
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "streamlit.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024
-REQUIRED_DIRS = ["inbox/instagram", "input_instagram", "input_behance", "input_youtube", "input_linkedin", "published",
+REQUIRED_DIRS = ["inbox/instagram", "input_instagram", "input_behance", "input_youtube", "input_linkedin", "input_week", "published",
                  "history", ".queue", ".browser_state", ".secrets", "logs"]
 
 

@@ -282,7 +282,7 @@ def _schedule_panel():
         rows = live + done
         df = pd.DataFrame([{"When": igs.local_str(i["when"]), "Project": i["name"],
                             "Type": {"reel": "🎬 reel", "carousel": "🖼 carousel"}.get(i.get("type"), "🖼 image"),
-                            "Slides": len(i["urls"]) or "—", "Status": f"{icon[i['status']]} {i['status']}",
+                            "Slides": str(len(i["urls"])) if i["urls"] else "—", "Status": f"{icon[i['status']]} {i['status']}",
                             "Note": (i.get("error") or i.get("post_id") or "")[:80]} for i in rows])
         ev = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
                           selection_mode="multi-row", key="igsch_tbl")
@@ -807,6 +807,11 @@ def render_instagram_ui():
             live_progress("ig_archive", "🗂 Syncing posts archive…", _on_archive_done)
         _posts_hub()
         _defaults_editor()
+        if st.segmented_control("Plan", ["One post", "🗓 Week planner"], default="One post",
+                                key="ig_mode") == "🗓 Week planner":
+            from ui.week_ui import render_week_planner
+            render_week_planner()
+            return
         picked = render_project_picker("instagram")
         if picked:
             _open(picked)
