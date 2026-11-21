@@ -643,7 +643,7 @@ def _reel_publish_job(project: Path, video: Path, r: dict, caption: str):
     except Exception as e:
         progress.fail("ig", f"Upload failed: {e}")
         return
-    if publish_reel(vurl, caption, curl, r.get("share_to_feed", True)).get("success"):
+    if publish_reel(vurl, caption, curl, r.get("share_to_feed", True), music=r.get("music")).get("success"):
         archive_project("instagram", project)
 
 
@@ -656,7 +656,7 @@ def _reel_schedule_job(project: Path, video: Path, r: dict, caption: str, when):
         progress.update(ns, 0, "done", "Uploaded")
         igs.add(project, [], caption, [], when, extra={
             "type": "reel", "video_url": vurl, "cover_url": curl,
-            "share_to_feed": r.get("share_to_feed", True)})
+            "share_to_feed": r.get("share_to_feed", True), "music": r.get("music")})
         progress.update(ns, 1, "done", igs.local_str(igs._utc(when)))
         progress.finish(ns, {"success": True, "scheduled": igs.local_str(igs._utc(when))})
     except Exception:
@@ -716,6 +716,8 @@ def _reel_editor(project: Path, vids: list[Path], images: list[Path]):
                      width=220)
         r["share_to_feed"] = st.toggle("Also show on the profile grid & feed", r["share_to_feed"],
                                        key="igr_feed")
+        from ui.music_ui import music_picker
+        music_picker(r, "igr")
 
     with right:
         d["title"] = st.text_area("Caption", key=_seed("igw_title", d["title"]), height=170,

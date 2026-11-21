@@ -91,6 +91,7 @@ def _poll_until_ready(
     step_label:   str,
     timeout:      int = POLL_TIMEOUT,
     interval:     int = POLL_INTERVAL,
+    base:         str = "",
 ) -> None:
     """
     Block until the container reports FINISHED.
@@ -100,7 +101,7 @@ def _poll_until_ready(
     start_time = time.time()
     while time.time() < deadline:
         data   = _get(
-            f"{GRAPH_BASE}/{container_id}",
+            f"{base or GRAPH_BASE}/{container_id}",
             {"fields": "status_code,status", "access_token": access_token},
         )
         status = data.get("status_code", "IN_PROGRESS")
@@ -171,11 +172,17 @@ def permalink(media_id: str) -> str:
 
 
 def publish_reel(video_url: str, caption: str, cover_url: str | None = None,
-                 share_to_feed: bool = True) -> dict[str, Any]:
-    """Reel: create REELS container → wait for video processing (can take minutes) → publish."""
+                 share_to_feed: bool = True, music: dict | None = None) -> dict[str, Any]:
+    """Reel: create REELS container → wait for video processing (can take minutes) → publish.
+    music (Instagram library track) routes through the Facebook-Login API — see src/ig_music.py."""
     progress.start(NS, ["Create reel container", "Instagram processes the video", "Publish reel"])
     try:
-        c = _creds()
+        base = GRAPH_BASE
+        if music and music.get("audio_id"):
+            from src import ig_music
+            c, base = ig_music.creds(), ig_music.FB_BASE
+        else:
+            c = _creds()
         if not str(video_url).startswith("https://"):
             raise ValueError("Video isn't uploaded yet (no public URL).")
         params: dict[str, Any] = {"media_type": "REELS", "video_url": video_url, "caption": caption,
@@ -183,15 +190,23 @@ def publish_reel(video_url: str, caption: str, cover_url: str | None = None,
                                   "access_token": c["access_token"]}
         if cover_url:
             params["cover_url"] = cover_url
+        if base != GRAPH_BASE:
+            params["audio_configuration"] = ig_music.audio_config(music)
         progress.update(NS, 0, "active", "Sending video URL to Instagram…")
-        cid = _post(f"{GRAPH_BASE}/{c['ig_user_id']}/media", params)["id"]
+        cid = _post(f"{base}/{c['ig_user_id']}/media", params)["id"]
         progress.update(NS, 0, "done", f"Container {cid[:10]}…")
         progress.update(NS, 1, "active", "Processing…")
-        _poll_until_ready(cid, c["access_token"], 1, "Video processing", timeout=1200, interval=10)
+        _poll_until_ready(cid, c["access_token"], 1, "Video processing", timeout=1200, interval=10,
+                          base=base)
         progress.update(NS, 1, "done", "Ready")
         progress.update(NS, 2, "active", "Publishing…")
-        post_id = _publish_container(c["ig_user_id"], c["access_token"], cid)
-        link = permalink(post_id)
+        post_id = _post(f"{base}/{c['ig_user_id']}/media_publish",
+                        {"creation_id": cid, "access_token": c["access_token"]})["id"]
+        try:
+            link = _get(f"{base}/{post_id}", {"fields": "permalink",
+                                              "access_token": c["access_token"]}).get("permalink", "")
+        except Exception:
+            link = ""
         progress.update(NS, 2, "done", link or f"Post ID: {post_id}")
         result = {"success": True, "post_id": post_id, "permalink": link, "type": "reel"}
         progress.finish(NS, result)

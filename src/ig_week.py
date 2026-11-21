@@ -133,7 +133,7 @@ def schedule_week(batch: Path) -> dict:
                 ig_reel.frame_at(files[0], float(day.get("cover_second", 1.0)), cover)
                 extra = {"type": "reel", "video_url": upload_video(files[0], proj.name),
                          "cover_url": upload_image(cover, proj.name) if cover.exists() else None,
-                         "share_to_feed": True}
+                         "share_to_feed": True, "music": day.get("music")}
                 sid = igs.add(proj, [], caption, [], when, extra=extra)
             else:
                 progress.update(NS, n, "active", "Framing + uploading…")

@@ -215,7 +215,7 @@ def tick() -> None:
     if item.get("type") == "reel":
         from src.instagram_publisher import publish_reel
         res = publish_reel(item["video_url"], item["caption"], item.get("cover_url"),
-                           item.get("share_to_feed", True))
+                           item.get("share_to_feed", True), music=item.get("music"))
     else:
         res = publish_to_instagram(item["urls"], item["caption"], alt_texts=item["alts"])
         if res.get("success"):

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
+import src.ig_music as ig_music
 import src.ig_week as wk
 from src.projects import list_projects, media_files
 from ui.folder_picker import upload_url
@@ -91,8 +92,8 @@ def render_week_planner():
         with st.container(border=True):
             if day.get("status"):
                 s1, s2 = st.columns([4, 1])
-                s1.markdown(f"**{label}** · 📅 scheduled ({len(day['items'])} file(s)) — manage it in "
-                            "the Instagram schedule panel")
+                s1.markdown(f"**{label}** · 📅 scheduled ({len(day['items'])} file(s)) "
+                            f"{ig_music.label(day.get('music'))} — manage it in the Instagram schedule panel")
                 if "#" not in d and s2.button("➕ Another post this day", key=k(f"add_{d}"), width="stretch"):
                     wk.add_slot(w, d); wk.save_plan(batch, w); st.rerun()
                 continue
@@ -129,6 +130,8 @@ def render_week_planner():
                     day["cover_second"] = st.number_input("Reel cover frame (seconds)", 0.0, 900.0,
                                                           float(day.get("cover_second", 1.0)), 0.5,
                                                           key=k(f"cv_{d}"))
+                    from ui.music_ui import music_picker
+                    music_picker(day, k(f"mu_{d}"), on_change=lambda: wk.save_plan(batch, w))
                 elif ia.ARCHIVE.exists():
                     for name, info in _dups(tuple(str(batch / n) for n in items),
                                             ia.ARCHIVE.stat().st_mtime).items():
