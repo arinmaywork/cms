@@ -389,6 +389,9 @@ def _posts_hub():
                         if Path(m["thumb"]).exists():
                             st.image(m["thumb"], width="stretch")
                         st.caption(f"{m['date']} · {m['slide']}/{m['of']} · [open]({m['permalink']})")
+                        if m.get("nearest"):
+                            st.caption(f"closest: {m['nearest']['file']} (score {m['nearest']['score']}, "
+                                       f"match ≤ {ia.DUP_DISTANCE})")
         with t4:
             if ia.MD.exists():
                 st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),

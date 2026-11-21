@@ -25,54 +25,90 @@ from src.fsutil import atomic_write_json, atomic_write_text, load_json
 ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE = ROOT / "history" / "ig_archive.json"
 MD = ROOT / "history" / "instagram_posts.md"
-LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes.json"
+LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes_v2.json"
 THUMBS = ROOT / "history" / "ig_thumbs"
 IMPORT = ROOT / "published" / "instagram" / "_import"   # drop bulk exports here
 POSTS_DIR = ROOT / "published" / "instagram"
 NS = "ig_archive"
-DUP_DISTANCE = 8          # Hamming distance (of 64 bits) that counts as "same photo"
+DUP_DISTANCE = 22         # combined dHash+pHash score (0–127) that counts as "same photo"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 # ── Fingerprint ───────────────────────────────────────────────────────────────
 
 def _trim(img: Image.Image) -> Image.Image:
-    """Remove a uniform border (frame padding) using the corner colour."""
-    g = img.convert("L")
-    w, h = g.size
-    corners = [g.getpixel(xy) for xy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
-    c = corners[0]
-    # only frame-like borders (near-black / near-white, same in all corners) get trimmed
-    if not (c < 30 or c > 225) or max(corners) - min(corners) > 20:
+    """Strip frame bars: only perfectly flat edge rows/columns (std < 6) of the corner
+    colour are removed — dark-but-textured photo content is never cut."""
+    import numpy as np
+    small = img.convert("L")
+    small.thumbnail((400, 400))
+    a = np.asarray(small, dtype=float)
+    h, w = a.shape
+    c = float(np.median([a[0, 0], a[0, -1], a[-1, 0], a[-1, -1]]))
+    flat = lambda v: abs(v.mean() - c) < 14 and v.std() < 6
+    top = next((y for y in range(h) if not flat(a[y, :])), h)
+    bot = next((y for y in range(h - 1, -1, -1) if not flat(a[y, :])), -1)
+    left = next((x for x in range(w) if not flat(a[:, x])), w)
+    right = next((x for x in range(w - 1, -1, -1) if not flat(a[:, x])), -1)
+    if bot - top < 20 or right - left < 20 or (top, left, h - 1 - bot, w - 1 - right) == (0, 0, 0, 0):
         return img
-    bg = Image.new("L", g.size, c)
-    bbox = ImageChops.difference(g, bg).point(lambda v: 255 if v > 24 else 0).getbbox()
-    return img.crop(bbox) if bbox and (bbox[2] - bbox[0]) > 20 and (bbox[3] - bbox[1]) > 20 else img
+    sx, sy = img.width / w, img.height / h
+    return img.crop((int((left + 1) * sx), int((top + 1) * sy), int(right * sx), int(bot * sy)))
 
 
-def dhash(img: Image.Image) -> str:
-    g = _trim(ImageOps.exif_transpose(img)).convert("L").resize((9, 8), Image.LANCZOS)
-    px = list(g.getdata())
+def _dh(g: Image.Image) -> str:
+    px = list(g.resize((9, 8), Image.LANCZOS).getdata())
     bits = "".join("1" if px[r * 9 + c] > px[r * 9 + c + 1] else "0" for r in range(8) for c in range(8))
     return f"{int(bits, 2):016x}"
 
 
+def _ph(g: Image.Image) -> str:
+    import numpy as np
+    a = np.asarray(g.resize((32, 32), Image.LANCZOS), dtype=float)
+    k = np.arange(32)
+    C = np.cos(np.pi * (2 * k[None, :] + 1) * k[:, None] / 64)
+    low = (C @ a @ C.T)[:8, :8].flatten()[1:]
+    bits = "".join("1" if v > np.median(low) else "0" for v in low)
+    return f"{int(bits, 2):016x}"
+
+
+def dhash(img: Image.Image, trim: bool = True) -> str:
+    """Fingerprint 'dhash:phash' (two 64-bit hashes)."""
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    g = (_trim(img) if trim else img).convert("L")
+    return f"{_dh(g)}:{_ph(g)}"
+
+
 def distance(a: str, b: str) -> int:
-    return bin(int(a, 16) ^ int(b, 16)).count("1")
+    """Combined score 0–127 (lower = more alike)."""
+    if not a or not b or ":" not in a or ":" not in b:
+        return 99
+    (ad, ap), (bd, bp) = a.split(":"), b.split(":")
+    return bin(int(ad, 16) ^ int(bd, 16)).count("1") + bin(int(ap, 16) ^ int(bp, 16)).count("1")
 
 
-def hash_file(path: Path) -> str | None:
+def hash_file(path: Path) -> list[str] | None:
+    """[raw, bar-trimmed] fingerprints of a local photo."""
     try:
         with Image.open(path) as im:
-            im.draft("RGB", (512, 512))          # fast JPEG decode at reduced size
-            return dhash(im)
+            im.draft("RGB", (640, 640))
+            return [dhash(im, trim=False), dhash(im, trim=True)]
     except Exception:
         return None
 
 
+def best_match(fp: str, local: dict) -> tuple[str | None, int]:
+    best, score = None, 999
+    for path, pair in local.items():
+        d = min(distance(fp, h) for h in pair)
+        if d < score:
+            best, score = path, d
+    return best, score
+
+
 # ── Local library index (cached by path + mtime) ──────────────────────────────
 
-def local_index() -> dict[str, str]:
+def local_index() -> dict[str, list[str]]:
     """{path: hash} for photos on the VM (input_instagram + published/instagram)."""
     cache = load_json(LOCAL_CACHE, {})
     out, changed = {}, False
@@ -142,6 +178,21 @@ def sync() -> dict:
         media = _fetch_all()
         progress.update(NS, 0, "done", f"{len(media)} posts")
 
+        if arch.get("hash_v") != 2:                   # fingerprint format changed → recompute
+            for p in posts.values():
+                for i, sl in enumerate(p["slides"]):
+                    th = THUMBS / f"{p['id']}_{i}.jpg"
+                    sl["hash"] = dhash(Image.open(th)) if th.exists() else None
+            arch["hash_v"] = 2
+        by_id0 = {m["id"]: m for m in media}
+        for p in posts.values():                      # missing fingerprints → re-download
+            kids = ((by_id0.get(p["id"]) or {}).get("children") or {}).get("data") or [by_id0.get(p["id"]) or {}]
+            for i, sl in enumerate(p["slides"]):
+                if not sl.get("hash") and i < len(kids):
+                    k = kids[i]
+                    src = k.get("media_url") if k.get("media_type") == "IMAGE" else k.get("thumbnail_url")
+                    if src:
+                        sl["hash"] = _download_hash(src, THUMBS / f"{p['id']}_{i}.jpg")
         new = [m for m in media if m["id"] not in posts]
         for n, m in enumerate(new, 1):
             progress.update(NS, 1, "active", f"{n}/{len(new)} · {m['timestamp'][:10]}")
@@ -169,10 +220,11 @@ def sync() -> dict:
         for p in posts.values():
             for s in p["slides"]:
                 if s.get("hash"):
-                    best = min(local.items(), key=lambda kv: distance(kv[1], s["hash"]), default=None)
-                    ok = best and distance(best[1], s["hash"]) <= DUP_DISTANCE
-                    s["file"] = Path(best[0]).name if ok else s.get("file", "")
-                    s["path"] = best[0] if ok else s.get("path", "")
+                    path, score = best_match(s["hash"], local)
+                    ok = path is not None and score <= DUP_DISTANCE
+                    s["file"] = Path(path).name if ok else ""
+                    s["path"] = path if ok else ""
+                    s["nearest"] = {} if ok or not path else {"file": Path(path).name, "score": score}
         arch["import_leftovers"] = _organize(posts)
         # thumbnails for older entries whose originals are missing (to recognise them)
         by_id = {m["id"]: m for m in media}
@@ -279,6 +331,7 @@ def missing(arch: dict | None = None) -> list[dict]:
             if not s.get("file"):
                 out.append({"date": p["date"][:10], "slide": i + 1, "of": len(p["slides"]),
                             "permalink": p["permalink"], "type": s.get("type", ""),
+                            "nearest": s.get("nearest") or {},
                             "thumb": str(THUMBS / f"{p['id']}_{i}.jpg")})
     return out
 
@@ -289,10 +342,10 @@ def find_duplicates(paths: list[Path]) -> dict[str, dict]:
     known = [(s["hash"], p) for p in posts for s in p["slides"] if s.get("hash")]
     out = {}
     for path in paths:
-        h = hash_file(path)
-        if not h or not known:
+        pair = hash_file(path)
+        if not pair or not known:
             continue
-        hit, p = min(((distance(h, kh), pp) for kh, pp in known), key=lambda t: t[0])
+        hit, p = min(((min(distance(h, kh) for h in pair), pp) for kh, pp in known), key=lambda t: t[0])
         if hit <= DUP_DISTANCE:
             out[path.name] = {"date": p["date"][:10], "permalink": p["permalink"], "distance": hit}
     return out
