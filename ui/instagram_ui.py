@@ -466,7 +466,10 @@ def _manual_matcher(ia, arch: dict, shown: list):
         pool += [x for x in _local_index_cached(ia.ARCHIVE.stat().st_mtime) if x not in pool]
     deep = {pth: sc for sc, pth in slide.get("deep", []) if sc >= 15}   # only real matches
     # one entry per distinct image (same photo can sit in several folders)
-    idx = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
+    norm = lambda q: str(Path(q).resolve())
+    idx = {norm(k): v for k, v in _local_index_cached(ia.ARCHIVE.stat().st_mtime).items()}
+    pool = list(dict.fromkeys(norm(x) for x in pool))
+    deep = {norm(k): v for k, v in deep.items()}
     seen, uniq = [], []
     for x in sorted(pool, key=lambda q: ("_import" not in q, len(q))):
         h = (idx.get(x) or [None])[0]
