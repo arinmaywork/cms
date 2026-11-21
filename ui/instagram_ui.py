@@ -381,6 +381,24 @@ def _posts_hub():
             else:
                 st.markdown(f"**{len(miss)} posted image(s) without a matched original.** For each, pick "
                             "the right photo from the closest candidates — or mark it as not available.")
+                d1, d2 = st.columns(2)
+                busy = st.session_state.get("ig_deep", False)
+                if d1.button("🔬 Deep match — unmatched exports (~1–3 min)", width="stretch",
+                             disabled=busy, type="primary"):
+                    from src import ig_deepmatch
+                    st.session_state.ig_deep = True
+                    start_publish_thread(fn=lambda: ig_deepmatch.run("leftovers"), platform="ig_deep")
+                    st.rerun()
+                if d2.button("🔬 Deep match — every photo on the server (slow)", width="stretch", disabled=busy):
+                    from src import ig_deepmatch
+                    st.session_state.ig_deep = True
+                    start_publish_thread(fn=lambda: ig_deepmatch.run("all"), platform="ig_deep")
+                    st.rerun()
+                st.caption("Deep match compares distinctive points (edges, textures) instead of the whole "
+                           "image, so padding, crops and colour edits don't fool it. Clear winners are "
+                           "matched automatically; the rest show better-ranked candidates below.")
+                if busy:
+                    live_progress("ig_deep", "🔬 Deep matching…", _on_deep_done)
                 hide = st.toggle("Hide reel covers", True, key="ig_miss_photos")
                 shown = [m for m in miss if not (hide and m["type"] == "VIDEO")]
                 local = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
@@ -399,15 +417,18 @@ def _posts_hub():
                             if st.button("✗ Not on server", key=f"na_{m['id']}_{m['idx']}"):
                                 ia.assign(m["id"], m["idx"], None)
                                 st.rerun()
-                        cands = ia.candidates(slide, local, 4) if slide.get("hash") else []
+                        deep = slide.get("deep")
+                        cands = ([(sc, pth) for sc, pth in deep if Path(pth).exists()][:4] if deep
+                                 else ia.candidates(slide, local, 4) if slide.get("hash") else [])
                         for ci, (col, (sc, path)) in enumerate(zip(cols[1:], cands)):
                             with col:
                                 fp = Path(path)
                                 if fp.exists():
                                     st.image(_thumb(path, fp.stat().st_mtime, 300), width="stretch")
-                                st.caption(f"{fp.parent.name}/{fp.name} · score {sc}")
+                                st.caption(f"{fp.parent.name}/{fp.name} · "
+                                           + (f"{sc} matching points" if deep else f"score {sc}"))
                                 if st.button("✓ This one", key=f"ok_{m['id']}_{m['idx']}_{ci}",
-                                             type="primary" if sc <= 30 else "secondary"):
+                                             type="primary" if (sc >= 25 if deep else sc <= 30) else "secondary"):
                                     ia.assign(m["id"], m["idx"], path)
                                     st.toast(f"Matched {fp.name}")
                                     st.rerun()
@@ -416,6 +437,13 @@ def _posts_hub():
                 st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
                                    file_name="instagram_posts.md", mime="text/markdown")
                 st.markdown(ia.MD.read_text(encoding="utf-8")[:15000])
+
+
+def _on_deep_done(result: dict):
+    st.session_state.ig_deep = False
+    st.session_state.ig_toast = (f"🔬 Deep match: {result.get('matched', 0)} matched automatically "
+                                 f"({result.get('checked', 0)} photos checked)" if result.get("success")
+                                 else f"Deep match failed: {result.get('error')}")
 
 
 def _on_archive_done(result: dict):
