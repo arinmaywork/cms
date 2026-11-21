@@ -377,6 +377,21 @@ def _archive_panel():
                                file_name="instagram_posts.md", mime="text/markdown", width="stretch")
             with st.popover("👁 Preview"):
                 st.markdown(ia.MD.read_text(encoding="utf-8")[:20000])
+            miss = ia.missing()
+            if miss:
+                st.markdown(f"**⚠️ {len(miss)} posted image(s) have no original on the server** — "
+                            "export these, copy them into a folder under `published/instagram/` "
+                            "(⬆️ Upload files → Instagram, or SFTP), then sync again.")
+                only_photos = st.toggle("Hide reel covers", True, key="ig_miss_photos")
+                shown = [m for m in miss if not (only_photos and m["type"] == "VIDEO")]
+                cols = st.columns(6)
+                for i, m in enumerate(shown[:120]):
+                    with cols[i % 6]:
+                        if Path(m["thumb"]).exists():
+                            st.image(m["thumb"], width="stretch")
+                        st.caption(f"{m['date']} · {m['slide']}/{m['of']} · [open]({m['permalink']})")
+            else:
+                st.success("Every posted image has its original on the server ✓")
 
 
 def _on_archive_done(result: dict):

@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE = ROOT / "history" / "ig_archive.json"
 MD = ROOT / "history" / "instagram_posts.md"
 LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes.json"
+THUMBS = ROOT / "history" / "ig_thumbs"
 NS = "ig_archive"
 DUP_DISTANCE = 8          # Hamming distance (of 64 bits) that counts as "same photo"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -106,11 +107,17 @@ def _fetch_all() -> list[dict]:
     return out
 
 
-def _download_hash(url: str) -> str | None:
+def _download_hash(url: str, thumb: Path | None = None) -> str | None:
     try:
         r = requests.get(url, timeout=30)
         r.raise_for_status()
-        return dhash(Image.open(io.BytesIO(r.content)))
+        im = Image.open(io.BytesIO(r.content))
+        if thumb:
+            THUMBS.mkdir(parents=True, exist_ok=True)
+            t = im.convert("RGB")
+            t.thumbnail((240, 240))
+            t.save(thumb, "JPEG", quality=80)
+        return dhash(im)
     except Exception as e:
         print(f"  [ig:archive] image fetch failed: {e}")
         return None
@@ -138,9 +145,11 @@ def sync() -> dict:
             progress.update(NS, 1, "active", f"{n}/{len(new)} · {m['timestamp'][:10]}")
             kids = (m.get("children") or {}).get("data") or [m]
             slides = []
-            for k in kids:
+            for i, k in enumerate(kids):
                 src = k.get("media_url") if k.get("media_type") == "IMAGE" else k.get("thumbnail_url")
-                slides.append({"type": k.get("media_type", ""), "hash": _download_hash(src) if src else None})
+                th = THUMBS / f"{m['id']}_{i}.jpg"
+                slides.append({"type": k.get("media_type", ""), "thumb": th.name,
+                               "hash": _download_hash(src, th) if src else None})
             posts[m["id"]] = {"id": m["id"], "date": m["timestamp"], "type": m.get("media_type", ""),
                               "permalink": m.get("permalink", ""), "caption": m.get("caption") or "",
                               "slides": slides}
@@ -159,6 +168,18 @@ def sync() -> dict:
                     best = min(local.items(), key=lambda kv: distance(kv[1], s["hash"]), default=None)
                     s["file"] = (Path(best[0]).name if best and distance(best[1], s["hash"]) <= DUP_DISTANCE
                                  else s.get("file", ""))
+        # thumbnails for older entries whose originals are missing (to recognise them)
+        by_id = {m["id"]: m for m in media}
+        for p in posts.values():
+            kids = ((by_id.get(p["id"]) or {}).get("children") or {}).get("data") or [by_id.get(p["id"]) or {}]
+            for i, s in enumerate(p["slides"]):
+                th = THUMBS / f"{p['id']}_{i}.jpg"
+                if not s.get("file") and not th.exists() and i < len(kids):
+                    k = kids[i]
+                    src = k.get("media_url") if k.get("media_type") == "IMAGE" else k.get("thumbnail_url")
+                    if src:
+                        _download_hash(src, th)
+                        s["thumb"] = th.name
         atomic_write_json(ARCHIVE, arch)
         progress.update(NS, 2, "done", f"{len(local)} local photos indexed")
 
@@ -181,6 +202,13 @@ def write_md(arch: dict | None = None) -> Path:
              f"_Synced {datetime.now():%Y-%m-%d %H:%M} · {len(posts)} posts · newest first. "
              "File names are matched by image fingerprint against photos on the server; "
              "`—` = original not on the server._", ""]
+    miss = missing(arch)
+    if miss:
+        lines += [f"## ⚠️ Originals not on the server ({len(miss)})", "",
+                  "Export these and copy them into a folder under `published/instagram/`, "
+                  "then sync again. Thumbnails: CMS → Instagram → 🗂 Posts archive.", ""]
+        lines += [f"- {x['date']} · slide {x['slide']} of {x['of']} · [open]({x['permalink']})" for x in miss]
+        lines += [""]
     for p in posts:
         text, tags = split_caption(p["caption"])
         n = len(p["slides"])
@@ -194,6 +222,19 @@ def write_md(arch: dict | None = None) -> Path:
             lines += [f"**Hashtags ({len(tags)}):** {' '.join(tags)}", ""]
     atomic_write_text(MD, "\n".join(lines) + "\n")
     return MD
+
+
+def missing(arch: dict | None = None) -> list[dict]:
+    """Posted images whose original isn't on the VM, newest first."""
+    arch = arch or load_json(ARCHIVE, {})
+    out = []
+    for p in sorted(arch.get("posts", {}).values(), key=lambda p: p["date"], reverse=True):
+        for i, s in enumerate(p["slides"]):
+            if not s.get("file"):
+                out.append({"date": p["date"][:10], "slide": i + 1, "of": len(p["slides"]),
+                            "permalink": p["permalink"], "type": s.get("type", ""),
+                            "thumb": str(THUMBS / f"{p['id']}_{i}.jpg")})
+    return out
 
 
 def find_duplicates(paths: list[Path]) -> dict[str, dict]:
