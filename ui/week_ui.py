@@ -90,8 +90,11 @@ def render_week_planner():
         label = wk.slot_label(d)
         with st.container(border=True):
             if day.get("status"):
-                st.markdown(f"**{label}** · 📅 scheduled ({len(day['items'])} file(s)) — manage it in "
+                s1, s2 = st.columns([4, 1])
+                s1.markdown(f"**{label}** · 📅 scheduled ({len(day['items'])} file(s)) — manage it in "
                             "the Instagram schedule panel")
+                if "#" not in d and s2.button("➕ Another post this day", key=k(f"add_{d}"), width="stretch"):
+                    wk.add_slot(w, d); wk.save_plan(batch, w); st.rerun()
                 continue
             h1, h2, h3 = st.columns([3, 1, 1])
             items = day["items"]
