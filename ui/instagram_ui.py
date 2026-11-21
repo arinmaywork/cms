@@ -256,6 +256,12 @@ def _slides_ui(project: Path, all_imgs: list[Path], d: dict) -> list[Path]:
                 del st.session_state[k]
             _save()
             st.rerun()
+    from src import ig_archive as ia
+    if ia.ARCHIVE.exists() and picked:
+        dups = _dups(tuple(str(project / n) for n in picked), ia.ARCHIVE.stat().st_mtime)
+        for name, info in dups.items():
+            st.warning(f"**{name}** looks already posted on {info['date']} — "
+                       f"[open post]({info['permalink']})", icon="🔁")
     return [project / n for n in picked]
 
 
@@ -351,6 +357,39 @@ def _past_posts():
         if st.button("🔄 Refresh", key="ig_past_ref"):
             _media_cached.clear()
             st.rerun()
+
+
+def _archive_panel():
+    from src import ig_archive as ia
+    with st.expander("🗂 Posts archive (.md) & duplicate check"):
+        st.caption("Lists every post date-wise with caption, hashtags and file names (matched by "
+                   "image fingerprint against photos on the server). Also powers the "
+                   "'already posted' warnings. First run downloads each post once; later runs "
+                   "only fetch new posts.")
+        c1, c2 = st.columns(2)
+        if c1.button("🔄 Sync archive from Instagram", width="stretch",
+                     disabled=st.session_state.get("ig_archiving", False)):
+            st.session_state.ig_archiving = True
+            start_publish_thread(fn=ia.sync, platform="ig_archive")
+            st.rerun()
+        if ia.MD.exists():
+            c2.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
+                               file_name="instagram_posts.md", mime="text/markdown", width="stretch")
+            with st.popover("👁 Preview"):
+                st.markdown(ia.MD.read_text(encoding="utf-8")[:20000])
+
+
+def _on_archive_done(result: dict):
+    st.session_state.ig_archiving = False
+    st.session_state.ig_toast = (f"🗂 Archive synced — {result.get('posts')} posts "
+                                 f"({result.get('new')} new)" if result.get("success")
+                                 else f"Archive sync failed: {result.get('error')}")
+
+
+@st.cache_data(max_entries=20, show_spinner=False)
+def _dups(paths: tuple, archive_mtime: float) -> dict:
+    from src import ig_archive as ia
+    return ia.find_duplicates([Path(x) for x in paths])
 
 
 def _defaults_editor():
@@ -561,7 +600,10 @@ def render_instagram_ui():
 
     project = st.session_state.ig_project
     if not project or not Path(project).exists():
+        if st.session_state.get("ig_archiving"):
+            live_progress("ig_archive", "🗂 Syncing posts archive…", _on_archive_done)
         _past_posts()
+        _archive_panel()
         _defaults_editor()
         picked = render_project_picker("instagram")
         if picked:
