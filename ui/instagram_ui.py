@@ -401,9 +401,13 @@ def _posts_hub():
                     live_progress("ig_deep", "🔬 Deep matching…", _on_deep_done)
                 hide = st.toggle("Hide reel covers", True, key="ig_miss_photos")
                 shown = [m for m in miss if not (hide and m["type"] == "VIDEO")]
-                mode = st.segmented_control("How to match", ["Pick from all exports", "Suggestions (top 4)"],
-                                            default="Pick from all exports", key="ig_match_mode")
-                if mode == "Pick from all exports" and shown:
+                mode = st.segmented_control("How to match", ["Upload originals", "Pick from all exports",
+                                                             "Suggestions (top 4)"],
+                                            default="Upload originals", key="ig_match_mode")
+                if mode == "Upload originals" and shown:
+                    _upload_originals(ia, shown)
+                    shown = []
+                elif mode == "Pick from all exports" and shown:
                     _manual_matcher(ia, arch, shown)
                     shown = []
                 local = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
@@ -454,6 +458,34 @@ def _capture_date(path: str, mtime: float) -> str:
         return str(raw)[:10].replace(":", "-") if raw else ""
     except Exception:
         return ""
+
+
+def _upload_originals(ia, shown: list):
+    """One row per posted image without an original: drop the original in, done."""
+    st.caption("Drop the original photo into the box next to each posted image. It's attached to that "
+               "exact post, filed into its folder and removed from this list.")
+    PER = 10
+    pages = max(1, -(-len(shown) // PER))
+    pg = st.number_input(f"Page (of {pages})", 1, pages, 1, key="ig_up_pg") if pages > 1 else 1
+    for m in shown[(pg - 1) * PER: pg * PER]:
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([1, 3, 1])
+            with c1:
+                if Path(m["thumb"]).exists():
+                    st.image(m["thumb"], width="stretch")
+            with c2:
+                st.markdown(f"**Posted {m['date']}** · slide {m['slide']} of {m['of']} · "
+                            f"[open on Instagram]({m['permalink']})")
+                f = st.file_uploader("Original", type=["jpg", "jpeg", "png", "webp"],
+                                     key=f"up_{m['id']}_{m['idx']}", label_visibility="collapsed")
+                if f is not None:
+                    dest = ia.attach(m["id"], m["idx"], f.name, f.getvalue())
+                    st.toast(f"Attached {dest.name}")
+                    st.rerun()
+            with c3:
+                if st.button("✗ Not available", key=f"upna_{m['id']}_{m['idx']}", width="stretch"):
+                    ia.assign(m["id"], m["idx"], None)
+                    st.rerun()
 
 
 def _manual_matcher(ia, arch: dict, shown: list):

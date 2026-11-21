@@ -133,6 +133,21 @@ def assign(post_id: str, idx: int, path: str | None) -> None:
     write_md(arch)
 
 
+def attach(post_id: str, idx: int, filename: str, data: bytes) -> Path:
+    """Store an original uploaded for a specific post/slide and record it."""
+    arch = load_json(ARCHIVE, {})
+    p = arch["posts"][post_id]
+    folder = POSTS_DIR / f"{p['date'][:10]}_{post_id[-6:]}"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{idx + 1:02d}_{Path(filename).name}"
+    dest.write_bytes(data)
+    p["slides"][idx].update(file=dest.name, path=str(dest), manual=True, nearest={})
+    p["slides"][idx].pop("unavailable", None)
+    atomic_write_json(ARCHIVE, arch)
+    write_md(arch)
+    return dest
+
+
 def best_match(fp: str, local: dict) -> tuple[str | None, int]:
     best, score = None, 999
     for path, pair in local.items():
