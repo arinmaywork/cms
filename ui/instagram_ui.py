@@ -401,6 +401,11 @@ def _posts_hub():
                     live_progress("ig_deep", "🔬 Deep matching…", _on_deep_done)
                 hide = st.toggle("Hide reel covers", True, key="ig_miss_photos")
                 shown = [m for m in miss if not (hide and m["type"] == "VIDEO")]
+                mode = st.segmented_control("How to match", ["Pick from all exports", "Suggestions (top 4)"],
+                                            default="Pick from all exports", key="ig_match_mode")
+                if mode == "Pick from all exports" and shown:
+                    _manual_matcher(ia, arch, shown)
+                    shown = []
                 local = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
                 posts_by_id = arch.get("posts", {})
                 PER = 8
@@ -437,6 +442,49 @@ def _posts_hub():
                 st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
                                    file_name="instagram_posts.md", mime="text/markdown")
                 st.markdown(ia.MD.read_text(encoding="utf-8")[:15000])
+
+
+def _manual_matcher(ia, arch: dict, shown: list):
+    """One posted image at a time vs. every unmatched export. Pool shrinks as you match."""
+    i = min(st.session_state.get("ig_mm_i", 0), len(shown) - 1)
+    m = shown[i]
+    slide = arch["posts"][m["id"]]["slides"][m["idx"]]
+    pool = [x for x in arch.get("import_leftovers", []) if Path(x).exists()]
+    if st.toggle("Also show photos already filed under other posts", key="ig_mm_all"):
+        pool += [x for x in _local_index_cached(ia.ARCHIVE.stat().st_mtime) if x not in pool]
+    deep = {pth: sc for sc, pth in slide.get("deep", [])}
+    pool.sort(key=lambda x: -deep.get(x, 0))                  # deep-match guesses first
+    left, right = st.columns([1, 3], gap="large")
+    with left:
+        st.markdown(f"**Posted image {i + 1} of {len(shown)}**")
+        if Path(m["thumb"]).exists():
+            st.image(m["thumb"], width="stretch")
+        st.caption(f"{m['date']} · slide {m['slide']}/{m['of']} · [open on Instagram]({m['permalink']})")
+        n1, n2 = st.columns(2)
+        if n1.button("◀ Prev", disabled=i == 0, width="stretch", key="ig_mm_prev"):
+            st.session_state.ig_mm_i = i - 1
+            st.rerun()
+        if n2.button("Skip ▶", disabled=i >= len(shown) - 1, width="stretch", key="ig_mm_next"):
+            st.session_state.ig_mm_i = i + 1
+            st.rerun()
+        if st.button("✗ Original not on server", width="stretch", key="ig_mm_na"):
+            ia.assign(m["id"], m["idx"], None)
+            st.rerun()
+    with right:
+        st.markdown(f"**Click the matching photo** — {len(pool)} candidate(s)")
+        per = 30
+        pages = max(1, -(-len(pool) // per))
+        pg = st.number_input(f"Photos page (of {pages})", 1, pages, 1, key="ig_mm_pg") if pages > 1 else 1
+        cols = st.columns(5)
+        for j, path in enumerate(pool[(pg - 1) * per: pg * per]):
+            fp = Path(path)
+            with cols[j % 5]:
+                st.image(_thumb(path, fp.stat().st_mtime, 300), width="stretch")
+                tag = f" · ⭐ {deep[path]} pts" if path in deep else ""
+                if st.button(f"✓ {fp.name}{tag}", key=f"ig_mm_{m['id']}_{m['idx']}_{pg}_{j}", width="stretch"):
+                    ia.assign(m["id"], m["idx"], path)
+                    st.toast(f"Matched {fp.name}")
+                    st.rerun()
 
 
 def _on_deep_done(result: dict):
