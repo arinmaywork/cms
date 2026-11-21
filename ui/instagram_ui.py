@@ -400,13 +400,13 @@ def _posts_hub():
                                 ia.assign(m["id"], m["idx"], None)
                                 st.rerun()
                         cands = ia.candidates(slide, local, 4) if slide.get("hash") else []
-                        for col, (sc, path) in zip(cols[1:], cands):
+                        for ci, (col, (sc, path)) in enumerate(zip(cols[1:], cands)):
                             with col:
                                 fp = Path(path)
                                 if fp.exists():
                                     st.image(_thumb(path, fp.stat().st_mtime, 300), width="stretch")
-                                st.caption(f"{fp.name} · score {sc}")
-                                if st.button("✓ This one", key=f"ok_{m['id']}_{m['idx']}_{fp.name}",
+                                st.caption(f"{fp.parent.name}/{fp.name} · score {sc}")
+                                if st.button("✓ This one", key=f"ok_{m['id']}_{m['idx']}_{ci}",
                                              type="primary" if sc <= 30 else "secondary"):
                                     ia.assign(m["id"], m["idx"], path)
                                     st.toast(f"Matched {fp.name}")
