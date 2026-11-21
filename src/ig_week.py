@@ -50,8 +50,32 @@ def save_plan(batch: Path, w: dict) -> None:
 
 
 def visible_days(w: dict) -> list[str]:
+    """Slot keys in order: 'YYYY-MM-DD' (first post) and 'YYYY-MM-DD#2', '#3'… (extra posts)."""
     start = date.fromisoformat(w["start"])
-    return [(start + timedelta(days=i)).isoformat() for i in range(int(w["days_n"]))]
+    out = []
+    for i in range(int(w["days_n"])):
+        d = (start + timedelta(days=i)).isoformat()
+        extra = sorted((k for k in w["days"] if k.startswith(d + "#")), key=lambda k: int(k.split("#")[1]))
+        out += [d] + extra
+    return out
+
+
+def add_slot(w: dict, d: str) -> str:
+    """Another post on the same date; default time 4 h after the day's first post."""
+    base = w["days"][d]
+    n = 2
+    while f"{d}#{n}" in w["days"]:
+        n += 1
+    hh, mm = map(int, (base.get("time") or w["time"]).split(":"))
+    w["days"][f"{d}#{n}"] = {**{k: v for k, v in base.items() if k in ("signature", "footer")},
+                             "items": [], "caption": "", "time": f"{min(23, hh + 4):02d}:{mm:02d}",
+                             "alts": {}, "cover_second": 1.0, "status": "", "schedule_id": ""}
+    return f"{d}#{n}"
+
+
+def slot_label(key: str) -> str:
+    d, _, n = key.partition("#")
+    return date.fromisoformat(d).strftime("%a %d %b") + (f" · post {n}" if n else "")
 
 
 def caption_of(day: dict) -> str:
@@ -100,7 +124,7 @@ def schedule_week(batch: Path) -> dict:
                     shutil.move(str(src), dst)
                 files.append(dst)
             hh, mm = map(int, (day.get("time") or w["time"]).split(":"))
-            when = datetime(*map(int, d.split("-")), hh, mm, tzinfo=igs.tz())
+            when = datetime(*map(int, d.split("#")[0].split("-")), hh, mm, tzinfo=igs.tz())
             caption = caption_of(day)
             if Path(files[0]).suffix.lower() in VIDEO:
                 from src import ig_reel

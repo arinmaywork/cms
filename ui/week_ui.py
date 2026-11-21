@@ -71,7 +71,7 @@ def render_week_planner():
         a1, a2 = st.columns([2, 1])
         if open_days:
             target = a1.selectbox("Add selected to", open_days, key=k("target"),
-                                  format_func=lambda d: date.fromisoformat(d).strftime("%a %d %b"))
+                                  format_func=wk.slot_label)
             if a2.button(f"➕ Add {len(sel)} selected", disabled=not sel, width="stretch", type="primary"):
                 w["days"][target]["items"] += sel
                 wk.save_plan(batch, w)
@@ -87,14 +87,19 @@ def render_week_planner():
     from ui.instagram_ui import _dups
     for d in days:
         day = w["days"][d]
-        label = date.fromisoformat(d).strftime("%a %d %b")
+        label = wk.slot_label(d)
         with st.container(border=True):
             if day.get("status"):
                 st.markdown(f"**{label}** · 📅 scheduled ({len(day['items'])} file(s)) — manage it in "
                             "the Instagram schedule panel")
                 continue
-            h1, h2 = st.columns([3, 1])
+            h1, h2, h3 = st.columns([3, 1, 1])
             items = day["items"]
+            if "#" not in d:
+                if h3.button("➕ Another post this day", key=k(f"add_{d}"), width="stretch"):
+                    wk.add_slot(w, d); wk.save_plan(batch, w); st.rerun()
+            elif h3.button("🗑 Remove this post", key=k(f"rm_{d}"), width="stretch"):
+                w["days"].pop(d); wk.save_plan(batch, w); st.rerun()
             kind = ("🎬 Reel" if items and Path(items[0]).suffix.lower() in VIDEO
                     else f"🖼 Carousel ({len(items)})" if len(items) > 1 else "🖼 Image" if items else "— empty")
             h1.markdown(f"**{label}** · {kind}")
