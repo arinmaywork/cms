@@ -75,20 +75,13 @@ def _site_panel():
         vals = {}
         for key, label, ph in (
                 ("site_name", "Site name", "Captured by Arinmay"),
-                ("home_title", "Home page title (≤ 60 chars)", "Arinmay Datta — street, portrait & nature photography from <city>"),
-                ("home_description", f"Home page description (≤ {DESC_MAX}, one full sentence)", ""),
+                ("home_title", "Home page title", "Arinmay Datta — street, portrait & nature photography from <city>"),
+                ("home_description", f"Home page description", ""),
                 ("about_title", "About page title", "About Arinmay Datta — photographer based in <city>"),
-                ("about_description", f"About page description (≤ {DESC_MAX})", ""),
+                ("about_description", f"About page description", ""),
                 ("location", "Base location (default for new stories)", "<city>, <country>"),
                 ("author", "Photographer name", "Arinmay Datta")):
             vals[key] = st.text_input(label, value=site.get(key, ""), key=f"wss_{key}", placeholder=ph)
-        for k in ("home_title", "about_title"):
-            if len(vals[k]) > 60:
-                st.caption(f"⚠️ {k} is {len(vals[k])} chars; Google shows ~60.")
-        for k in ("home_description", "about_description"):
-            v = vals[k].strip()
-            if v and (len(v) > DESC_MAX or not v.endswith((".", "!", "?"))):
-                st.caption(f"⚠️ {k}: use one full sentence ≤ {DESC_MAX} chars ending in a period.")
         if st.button("💾 Save site settings", key="wss_save"):
             try:
                 r2.put_site({**site, **vals})
@@ -192,7 +185,7 @@ def _edit_view(slug: str):
         return st.text_input(label, key=key, **kw)
 
     title = field("wse_title", "Title", s["title"])
-    desc = field("wse_description", f"Description (search results & link previews, max {DESC_MAX})", s["description"])
+    desc = field("wse_description", f"Description (search results & link previews)", s["description"])
     summary = field("wse_summary", "Summary — what is in the photo (e.g. an elderly man and his grandson)", s.get("summary", ""))
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -200,7 +193,7 @@ def _edit_view(slug: str):
     with c2:
         captured = field("wse_captured", "Captured (year, e.g. 2023)", s.get("captured", ""))
     with c3:
-        tags = field("wse_tags", "Tags (comma-separated; first = home filter)", ", ".join(s.get("tags", [])))
+        tags = field("wse_tags", "Categories / tags (comma-separated; each one is a home filter, a story can be in several)", ", ".join(s.get("tags", [])))
     with c4:
         st.session_state.setdefault("wse_date", datetime.date.fromisoformat(s["published_at"]))
         pub_date = st.date_input("Published", key="wse_date")
@@ -231,8 +224,6 @@ def _edit_view(slug: str):
     problems = ([] if images else ["Keep at least one image"]) + bad
     for x in problems:
         st.caption(f"⛔ {x}")
-    for x in warn:
-        st.caption(f"⚠️ {x}")
     if st.button("💾 SAVE & REPUBLISH", type="primary", width="stretch", disabled=bool(problems)):
         try:
             r2.update_story(slug, {
@@ -351,7 +342,7 @@ def render_website_ui():
 
     title = field("wsw_title", "Title")
     slug = field("wsw_slug", "URL slug", _slugify(p.name), help="Becomes /stories/<slug>. Re-using a published slug updates that story.")
-    desc = field("wsw_description", f"Description (search results & link previews, max {DESC_MAX})")
+    desc = field("wsw_description", f"Description (search results & link previews)")
     summary = field("wsw_summary", "Summary — what is in the photo (e.g. an elderly man and his grandson)")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -359,7 +350,7 @@ def render_website_ui():
     with c2:
         captured = field("wsw_captured", "Captured (year, e.g. 2023)")
     with c3:
-        tags = field("wsw_tags", "Tags (comma-separated)")
+        tags = field("wsw_tags", "Categories / tags (comma-separated; each one is a home filter, a story can be in several)")
     with c4:
         st.session_state.setdefault("wsw_published_at", datetime.date.fromisoformat(
             d.get("published_at") or datetime.date.today().isoformat()))
@@ -395,8 +386,6 @@ def render_website_ui():
         + bad
     for x in problems:
         st.caption(f"⛔ {x}")
-    for x in warn:
-        st.caption(f"⚠️ {x}")
     try:
         if any(s["slug"] == slug for s in _published()):
             st.info(f"`{slug}` is already published — publishing will update it.", icon="♻️")

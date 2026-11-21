@@ -78,7 +78,7 @@ def cmd_draft(a):
                         f"title is '{s['title']}'. Location: {loc or 'unknown (do not mention one)'}. "
                         f"Year: {cap or 'unknown (do not mention one)'}. Story text: {s.get('body_md', '')[:1500]}")
                 summary = summary or draft["summary"]
-                if seo.check(s["title"], desc, [])[0]:     # only replace descriptions that fail the rules
+                if seo.cut_off(desc):     # only replace descriptions that fail the rules
                     desc = draft["description"] or desc
                 time.sleep(1)                              # be gentle with the free Gemini quota
             except Exception as e:

@@ -60,35 +60,13 @@ def sentence(text: str, limit: int = DESC_MAX) -> str:
     return out
 
 
-def check(title: str, description: str, alts: list[tuple[str, str]], location: str = "",
-          summary: str = "", captured: str = "") -> tuple[list[str], list[str]]:
-    """→ (blocking problems, soft warnings). alts: [(image label, alt text)]."""
-    bad, warn = [], []
+def cut_off(description: str) -> bool:
+    """True for a description that is empty, over DESC_MAX, cut off with … or not a full sentence (used by seo_backfill)."""
     d = (description or "").strip()
-    if not title.strip():
-        bad.append("Title is empty")
-    if not d:
-        bad.append("Description is empty")
-    else:
-        if len(d) > DESC_MAX:
-            bad.append(f"Description too long ({len(d)}/{DESC_MAX})")
-        if d.endswith(("...", "…")):
-            bad.append("Description is cut off (ends with …) — write one full sentence")
-        elif not d.endswith(_END):
-            bad.append("Description should be one full sentence ending in . ! or ?")
-    t = title.strip().lower()
-    for label, alt in alts:
-        a = (alt or "").strip()
-        if not a:
-            bad.append(f"{label}: alt text is missing")
-        elif a.lower() == t or a.lower().rstrip(".") == t:
-            bad.append(f"{label}: alt text just repeats the title — describe what is in the photo")
-        elif len(a) < ALT_MIN:
-            warn.append(f"{label}: alt text is very short ({len(a)} chars) — describe the photo")
-    if not (location or "").strip():
-        warn.append("No location — 'street photographer <city>' is what people search for")
-    if not (summary or "").strip():
-        warn.append("No summary line (what is in the photo)")
-    if not (captured or "").strip():
-        warn.append("No capture date/year")
-    return bad, warn
+    return not d or len(d) > DESC_MAX or d.endswith(("...", "…")) or not d.endswith(_END)
+
+
+def check(title: str, description: str = "", alts=(), location: str = "",
+          summary: str = "", captured: str = "") -> tuple[list[str], list[str]]:
+    """→ (blocking problems, soft warnings). Only an empty title blocks; nothing else is enforced."""
+    return ([] if (title or "").strip() else ["Title is empty"]), []

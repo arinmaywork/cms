@@ -181,6 +181,18 @@ def _get_json(key: str, default):
         raise
 
 
+def norm_tags(tags) -> list[str]:
+    """Each tag is a filter category. Stored lower-case with dashes (no spaces: the site's data-category is space-separated)."""
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    out = []
+    for t in tags or []:
+        t = "-".join(str(t).lower().split())
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
 # ── stories ──────────────────────────────────────────────────────────────────
 def publish_story(slug: str, title: str, description: str, body_md: str, images: list[dict],
                   location: str = "", tags: list[str] | None = None,
@@ -199,7 +211,7 @@ def publish_story(slug: str, title: str, description: str, body_md: str, images:
             progress(n, len(images))
     story = {
         "schema": SCHEMA, "slug": slug, "title": title, "description": description,
-        "body_md": body_md, "location": location, "tags": tags or [],
+        "body_md": body_md, "location": location, "tags": norm_tags(tags),
         "summary": summary, "captured": captured,
         "published_at": published_at or now[:10], "updated_at": now,
         "cover": out[0], "images": out,
@@ -233,6 +245,8 @@ def update_story(slug: str, fields: dict, images: list[dict] | None = None) -> d
     story = get_story(slug)
     if story is None:
         raise KeyError(f"story {slug!r} is not published")
+    if "tags" in fields:
+        fields = {**fields, "tags": norm_tags(fields["tags"])}
     story.update({k: v for k, v in fields.items()
                   if k in ("title", "description", "body_md", "location", "tags", "published_at",
                                 "summary", "captured")})
