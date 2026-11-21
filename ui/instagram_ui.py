@@ -444,6 +444,18 @@ def _posts_hub():
                 st.markdown(ia.MD.read_text(encoding="utf-8")[:15000])
 
 
+@st.cache_data(max_entries=5000, show_spinner=False)
+def _capture_date(path: str, mtime: float) -> str:
+    """EXIF DateTimeOriginal → 'YYYY-MM-DD' ('' if absent)."""
+    try:
+        with Image.open(path) as im:
+            ex = im.getexif()
+            raw = ex.get_ifd(0x8769).get(36867) or ex.get(306) or ""
+        return str(raw)[:10].replace(":", "-") if raw else ""
+    except Exception:
+        return ""
+
+
 def _manual_matcher(ia, arch: dict, shown: list):
     """One posted image at a time vs. every unmatched export. Pool shrinks as you match."""
     i = min(st.session_state.get("ig_mm_i", 0), len(shown) - 1)
@@ -452,8 +464,28 @@ def _manual_matcher(ia, arch: dict, shown: list):
     pool = [x for x in arch.get("import_leftovers", []) if Path(x).exists()]
     if st.toggle("Also show photos already filed under other posts", key="ig_mm_all"):
         pool += [x for x in _local_index_cached(ia.ARCHIVE.stat().st_mtime) if x not in pool]
-    deep = {pth: sc for sc, pth in slide.get("deep", [])}
-    pool.sort(key=lambda x: -deep.get(x, 0))                  # deep-match guesses first
+    deep = {pth: sc for sc, pth in slide.get("deep", []) if sc >= 15}   # only real matches
+    # one entry per distinct image (same photo can sit in several folders)
+    idx = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
+    seen, uniq = [], []
+    for x in sorted(pool, key=lambda q: ("_import" not in q, len(q))):
+        h = (idx.get(x) or [None])[0]
+        if h and any(ia.distance(h, o) <= 6 for o in seen):
+            continue
+        if h:
+            seen.append(h)
+        uniq.append(x)
+    from datetime import datetime as _dt
+    post_day = _dt.fromisoformat(m["date"])
+    def _key(x):
+        if x in deep:
+            return (0, -deep[x])
+        cd = _capture_date(x, Path(x).stat().st_mtime)
+        if not cd:
+            return (3, 0)
+        d = (post_day - _dt.fromisoformat(cd)).days
+        return (1, d) if d >= 0 else (2, -d)              # taken before the post first, nearest first
+    pool = sorted(uniq, key=_key)
     left, right = st.columns([1, 3], gap="large")
     with left:
         st.markdown(f"**Posted image {i + 1} of {len(shown)}**")
@@ -471,7 +503,8 @@ def _manual_matcher(ia, arch: dict, shown: list):
             ia.assign(m["id"], m["idx"], None)
             st.rerun()
     with right:
-        st.markdown(f"**Click the matching photo** — {len(pool)} candidate(s)")
+        st.markdown(f"**Click the matching photo** — {len(pool)} candidate(s), "
+                    "sorted by capture date closest before the post date")
         per = 30
         pages = max(1, -(-len(pool) // per))
         pg = st.number_input(f"Photos page (of {pages})", 1, pages, 1, key="ig_mm_pg") if pages > 1 else 1
@@ -480,7 +513,8 @@ def _manual_matcher(ia, arch: dict, shown: list):
             fp = Path(path)
             with cols[j % 5]:
                 st.image(_thumb(path, fp.stat().st_mtime, 300), width="stretch")
-                tag = f" · ⭐ {deep[path]} pts" if path in deep else ""
+                cd = _capture_date(path, fp.stat().st_mtime)
+                tag = f" · ⭐ {deep[path]} pts" if path in deep else (f" · 📷 {cd}" if cd else "")
                 if st.button(f"✓ {fp.name}{tag}", key=f"ig_mm_{m['id']}_{m['idx']}_{pg}_{j}", width="stretch"):
                     ia.assign(m["id"], m["idx"], path)
                     st.toast(f"Matched {fp.name}")
