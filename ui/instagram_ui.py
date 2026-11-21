@@ -379,19 +379,38 @@ def _posts_hub():
             if not miss:
                 st.success("Every posted image has its original on the server ✓")
             else:
-                st.markdown(f"**{len(miss)} posted image(s) have no original on the server.** Export them, "
-                            "copy into a folder under `published/instagram/` (rsync/Cyberduck), then Sync.")
+                st.markdown(f"**{len(miss)} posted image(s) without a matched original.** For each, pick "
+                            "the right photo from the closest candidates — or mark it as not available.")
                 hide = st.toggle("Hide reel covers", True, key="ig_miss_photos")
                 shown = [m for m in miss if not (hide and m["type"] == "VIDEO")]
-                cols = st.columns(6)
-                for i, m in enumerate(shown[:120]):
-                    with cols[i % 6]:
-                        if Path(m["thumb"]).exists():
-                            st.image(m["thumb"], width="stretch")
-                        st.caption(f"{m['date']} · {m['slide']}/{m['of']} · [open]({m['permalink']})")
-                        if m.get("nearest"):
-                            st.caption(f"closest: {m['nearest']['file']} (score {m['nearest']['score']}, "
-                                       f"match ≤ {ia.DUP_DISTANCE})")
+                local = _local_index_cached(ia.ARCHIVE.stat().st_mtime)
+                posts_by_id = arch.get("posts", {})
+                PER = 8
+                pages = max(1, -(-len(shown) // PER))
+                pg = st.number_input(f"Page (of {pages})", 1, pages, 1, key="ig_miss_pg") if pages > 1 else 1
+                for m in shown[(pg - 1) * PER: pg * PER]:
+                    slide = posts_by_id[m["id"]]["slides"][m["idx"]]
+                    with st.container(border=True):
+                        cols = st.columns([1.2, 1, 1, 1, 1])
+                        with cols[0]:
+                            if Path(m["thumb"]).exists():
+                                st.image(m["thumb"], width="stretch")
+                            st.caption(f"**Posted** {m['date']} · {m['slide']}/{m['of']} · [open]({m['permalink']})")
+                            if st.button("✗ Not on server", key=f"na_{m['id']}_{m['idx']}"):
+                                ia.assign(m["id"], m["idx"], None)
+                                st.rerun()
+                        cands = ia.candidates(slide, local, 4) if slide.get("hash") else []
+                        for col, (sc, path) in zip(cols[1:], cands):
+                            with col:
+                                fp = Path(path)
+                                if fp.exists():
+                                    st.image(_thumb(path, fp.stat().st_mtime, 300), width="stretch")
+                                st.caption(f"{fp.name} · score {sc}")
+                                if st.button("✓ This one", key=f"ok_{m['id']}_{m['idx']}_{fp.name}",
+                                             type="primary" if sc <= 30 else "secondary"):
+                                    ia.assign(m["id"], m["idx"], path)
+                                    st.toast(f"Matched {fp.name}")
+                                    st.rerun()
         with t4:
             if ia.MD.exists():
                 st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
@@ -404,6 +423,12 @@ def _on_archive_done(result: dict):
     st.session_state.ig_toast = (f"🗂 Archive synced — {result.get('posts')} posts "
                                  f"({result.get('new')} new)" if result.get("success")
                                  else f"Archive sync failed: {result.get('error')}")
+
+
+@st.cache_data(max_entries=3, show_spinner="Indexing photos on the server…")
+def _local_index_cached(archive_mtime: float) -> dict:
+    from src import ig_archive as ia
+    return ia.local_index()
 
 
 @st.cache_data(max_entries=20, show_spinner=False)

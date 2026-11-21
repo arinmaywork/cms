@@ -25,7 +25,7 @@ from src.fsutil import atomic_write_json, atomic_write_text, load_json
 ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE = ROOT / "history" / "ig_archive.json"
 MD = ROOT / "history" / "instagram_posts.md"
-LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes_v2.json"
+LOCAL_CACHE = ROOT / ".queue" / "ig_local_hashes_v3.json"
 THUMBS = ROOT / "history" / "ig_thumbs"
 IMPORT = ROOT / "published" / "instagram" / "_import"   # drop bulk exports here
 POSTS_DIR = ROOT / "published" / "instagram"
@@ -92,9 +92,45 @@ def hash_file(path: Path) -> list[str] | None:
     try:
         with Image.open(path) as im:
             im.draft("RGB", (640, 640))
-            return [dhash(im, trim=False), dhash(im, trim=True)]
+            return [dhash(im, trim=False), dhash(im, trim=True), center_fp(im, trim=False)]
     except Exception:
         return None
+
+
+def _center(img: Image.Image, f: float = 0.7) -> Image.Image:
+    w, h = img.size
+    return img.crop((int(w * (1 - f) / 2), int(h * (1 - f) / 2), int(w * (1 + f) / 2), int(h * (1 + f) / 2)))
+
+
+def center_fp(img: Image.Image, trim: bool = True) -> str:
+    """Fingerprint of the central 70% — tolerant of borders/crops added in manual edits."""
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    return dhash(_center(_trim(img) if trim else img), trim=False)
+
+
+def slide_score(s: dict, pair: list[str]) -> int:
+    sc = min(distance(s["hash"], h) for h in pair[:2])
+    if s.get("hash_c") and len(pair) > 2:
+        sc = min(sc, distance(s["hash_c"], pair[2]))
+    return sc
+
+
+def candidates(s: dict, local: dict, k: int = 4) -> list[tuple[int, str]]:
+    return sorted((slide_score(s, pair), path) for path, pair in local.items())[:k]
+
+
+def assign(post_id: str, idx: int, path: str | None) -> None:
+    """Manual confirmation from the UI (path=None → mark 'original not available')."""
+    arch = load_json(ARCHIVE, {})
+    s = arch["posts"][post_id]["slides"][idx]
+    if path:
+        s.update(file=Path(path).name, path=path, manual=True, nearest={})
+        s.pop("unavailable", None)
+    else:
+        s.update(unavailable=True, file="", path="")
+    arch["import_leftovers"] = _organize(arch["posts"])
+    atomic_write_json(ARCHIVE, arch)
+    write_md(arch)
 
 
 def best_match(fp: str, local: dict) -> tuple[str | None, int]:
@@ -178,12 +214,19 @@ def sync() -> dict:
         media = _fetch_all()
         progress.update(NS, 0, "done", f"{len(media)} posts")
 
-        if arch.get("hash_v") != 2:                   # fingerprint format changed → recompute
+        if arch.get("hash_v") not in (2, 3):                   # fingerprint format changed → recompute
             for p in posts.values():
                 for i, sl in enumerate(p["slides"]):
                     th = THUMBS / f"{p['id']}_{i}.jpg"
                     sl["hash"] = dhash(Image.open(th)) if th.exists() else None
             arch["hash_v"] = 2
+        if arch.get("hash_v") != 3:                   # add centre fingerprints (from thumbnails)
+            for p in posts.values():
+                for i, sl in enumerate(p["slides"]):
+                    th = THUMBS / f"{p['id']}_{i}.jpg"
+                    if th.exists():
+                        sl["hash_c"] = center_fp(Image.open(th))
+            arch["hash_v"] = 3
         by_id0 = {m["id"]: m for m in media}
         for p in posts.values():                      # missing fingerprints → re-download
             kids = ((by_id0.get(p["id"]) or {}).get("children") or {}).get("data") or [by_id0.get(p["id"]) or {}]
@@ -201,8 +244,9 @@ def sync() -> dict:
             for i, k in enumerate(kids):
                 src = k.get("media_url") if k.get("media_type") == "IMAGE" else k.get("thumbnail_url")
                 th = THUMBS / f"{m['id']}_{i}.jpg"
-                slides.append({"type": k.get("media_type", ""), "thumb": th.name,
-                               "hash": _download_hash(src, th) if src else None})
+                h = _download_hash(src, th) if src else None
+                slides.append({"type": k.get("media_type", ""), "thumb": th.name, "hash": h,
+                               "hash_c": center_fp(Image.open(th)) if h and th.exists() else None})
             posts[m["id"]] = {"id": m["id"], "date": m["timestamp"], "type": m.get("media_type", ""),
                               "permalink": m.get("permalink", ""), "caption": m.get("caption") or "",
                               "slides": slides}
@@ -220,8 +264,15 @@ def sync() -> dict:
         for p in posts.values():
             for s in p["slides"]:
                 if s.get("hash"):
-                    path, score = best_match(s["hash"], local)
-                    ok = path is not None and score <= DUP_DISTANCE
+                    if s.get("manual") and s.get("path") and Path(s["path"]).exists():
+                        continue                              # confirmed by you — keep
+                    top = candidates(s, local, 6)
+                    path, score = (top[0][1], top[0][0]) if top else (None, 999)
+                    # next-best that is a *different* photo (not the same image filed twice)
+                    rest = [sc for sc, pth in top[1:] if slide_score(s, local[pth]) - score > 0
+                            and min(distance(a, b) for a in local[pth][:2] for b in local[path][:2]) > DUP_DISTANCE]
+                    margin = (rest[0] - score) if rest else 99
+                    ok = path is not None and (score <= DUP_DISTANCE or (score <= 30 and margin >= 12))
                     s["file"] = Path(path).name if ok else ""
                     s["path"] = path if ok else ""
                     s["nearest"] = {} if ok or not path else {"file": Path(path).name, "score": score}
@@ -328,8 +379,8 @@ def missing(arch: dict | None = None) -> list[dict]:
     out = []
     for p in sorted(arch.get("posts", {}).values(), key=lambda p: p["date"], reverse=True):
         for i, s in enumerate(p["slides"]):
-            if not s.get("file"):
-                out.append({"date": p["date"][:10], "slide": i + 1, "of": len(p["slides"]),
+            if not s.get("file") and not s.get("unavailable"):
+                out.append({"id": p["id"], "idx": i, "date": p["date"][:10], "slide": i + 1, "of": len(p["slides"]),
                             "permalink": p["permalink"], "type": s.get("type", ""),
                             "nearest": s.get("nearest") or {},
                             "thumb": str(THUMBS / f"{p['id']}_{i}.jpg")})
