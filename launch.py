@@ -123,6 +123,12 @@ def _services_loop(stop: threading.Event) -> None:
             ig_tick()
         except Exception as e:
             print(f"  [supervisor] queue check failed: {e}")
+        try:                                     # daily posts-archive sync (once enabled)
+            from src import ig_archive as ia
+            if ia.ARCHIVE.exists() and time.time() - ia.ARCHIVE.stat().st_mtime > 86400:
+                ia.sync()
+        except Exception as e:
+            print(f"  [supervisor] archive sync failed: {e}")
         if time.time() - last_ig > 1800:
             last_ig = time.time()
             try:

@@ -313,85 +313,74 @@ def _schedule_panel():
         st.caption("Select rows to post now, move, or remove. Failed posts retry 3× (10 min apart).")
 
 
-@st.cache_data(ttl=600, show_spinner="Loading your posts…")
-def _media_cached() -> list:
-    from src.instagram_publisher import fetch_recent_media
-    return fetch_recent_media(60)
-
-
-def _past_posts():
+def _posts_hub():
+    """One panel for everything about past posts — reads the local archive (instant)."""
     import pandas as pd
     from datetime import datetime, timezone
-    with st.expander("📊 Past posts & consistency"):
-        if not st.toggle("Load from Instagram", key="ig_past_on"):
-            return
-        try:
-            media = _media_cached()
-        except Exception as e:
-            st.error(f"Couldn't load posts: {e}")
-            return
-        if not media:
-            st.info("No posts found.")
-            return
-        ts = sorted(datetime.fromisoformat(m["timestamp"].replace("+0000", "+00:00")) for m in media)
-        now = datetime.now(timezone.utc)
-        gaps = [(b - a).days for a, b in zip(ts, ts[1:])]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Posts, last 30 days", sum((now - t).days < 30 for t in ts))
-        m2.metric("Avg days between", f"{sum(gaps) / len(gaps):.1f}" if gaps else "—")
-        m3.metric("Longest gap (days)", max(gaps) if gaps else "—")
-        m4.metric("Days since last post", (now - ts[-1]).days)
-        wk = pd.Series(1, index=pd.to_datetime(ts)).resample("W").sum().tail(16)
-        st.bar_chart(wk.rename("posts per week"), height=160)
-        cols = st.columns(4)
-        for i, m in enumerate(media[:24]):
-            with cols[i % 4].container(border=True):
-                img = m.get("thumbnail_url") or m.get("media_url")
-                if img:
-                    st.image(img, width="stretch")
-                st.caption(f"{m['timestamp'][:10]} · ❤️ {m.get('like_count', '–')} · 💬 "
-                           f"{m.get('comments_count', '–')} · {m.get('media_type', '').title()}")
-                with st.popover("Details"):
-                    st.text((m.get("caption") or "(no caption)")[:2200])
-                    st.link_button("Open on Instagram ↗", m.get("permalink", "https://instagram.com"))
-        if st.button("🔄 Refresh", key="ig_past_ref"):
-            _media_cached.clear()
-            st.rerun()
-
-
-def _archive_panel():
     from src import ig_archive as ia
-    with st.expander("🗂 Posts archive (.md) & duplicate check"):
-        st.caption("Lists every post date-wise with caption, hashtags and file names (matched by "
-                   "image fingerprint against photos on the server). Also powers the "
-                   "'already posted' warnings. First run downloads each post once; later runs "
-                   "only fetch new posts.")
-        c1, c2 = st.columns(2)
-        if c1.button("🔄 Sync archive from Instagram", width="stretch",
+    from src.fsutil import load_json
+    arch = load_json(ia.ARCHIVE, {})
+    posts = sorted(arch.get("posts", {}).values(), key=lambda p: p["date"], reverse=True)
+    with st.expander(f"📊 Posts & archive — {len(posts)} posts"
+                     + (f" · synced {arch['synced']}" if arch.get("synced") else "")):
+        c1, c2 = st.columns([1, 3])
+        if c1.button("🔄 Sync from Instagram", width="stretch",
                      disabled=st.session_state.get("ig_archiving", False)):
             st.session_state.ig_archiving = True
             start_publish_thread(fn=ia.sync, platform="ig_archive")
             st.rerun()
-        if ia.MD.exists():
-            c2.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
-                               file_name="instagram_posts.md", mime="text/markdown", width="stretch")
-            with st.popover("👁 Preview"):
-                st.markdown(ia.MD.read_text(encoding="utf-8")[:20000])
-            miss = ia.missing()
-            if miss:
-                st.markdown(f"**⚠️ {len(miss)} posted image(s) have no original on the server** — "
-                            "export these, copy them into a folder under `published/instagram/` "
-                            "(⬆️ Upload files → Instagram, or SFTP), then sync again.")
-                only_photos = st.toggle("Hide reel covers", True, key="ig_miss_photos")
-                shown = [m for m in miss if not (only_photos and m["type"] == "VIDEO")]
+        c2.caption("Also syncs automatically once a day. First sync downloads each post once; "
+                   "later syncs only fetch new posts and refresh likes/comments.")
+        if not posts:
+            st.info("No archive yet — click Sync.")
+            return
+        t1, t2, t3, t4 = st.tabs(["📈 Consistency", "🖼 Recent posts", "⚠️ Missing originals", "🗂 Archive file"])
+        with t1:
+            ts = sorted(datetime.fromisoformat(p["date"].replace("+0000", "+00:00")) for p in posts)
+            now = datetime.now(timezone.utc)
+            gaps = [(b - a).days for a, b in zip(ts, ts[1:])]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Posts, last 30 days", sum((now - t).days < 30 for t in ts))
+            m2.metric("Avg days between", f"{sum(gaps[-20:]) / len(gaps[-20:]):.1f}" if gaps else "—",
+                      help="Over your last 20 gaps")
+            m3.metric("Longest gap (days)", max(gaps) if gaps else "—")
+            m4.metric("Days since last post", (now - ts[-1]).days)
+            wk = pd.Series(1, index=pd.to_datetime(ts)).resample("W").sum().tail(26)
+            st.bar_chart(wk.rename("posts per week"), height=170)
+        with t2:
+            cols = st.columns(6)
+            for i, p in enumerate(posts[:36]):
+                th = ia.THUMBS / f"{p['id']}_0.jpg"
+                with cols[i % 6]:
+                    if th.exists():
+                        st.image(str(th), width="stretch")
+                    st.caption(f"{p['date'][:10]} · ❤️ {p.get('likes', '–')} · 💬 {p.get('comments', '–')}")
+                    with st.popover("Details"):
+                        text, tags = ia.split_caption(p["caption"])
+                        st.markdown(f"**Files:** {', '.join(s.get('file') or '—' for s in p['slides'])}")
+                        st.text(text or "(no caption)")
+                        st.caption(" ".join(tags))
+                        st.link_button("Open on Instagram ↗", p["permalink"] or "https://instagram.com")
+        with t3:
+            miss = ia.missing(arch)
+            if not miss:
+                st.success("Every posted image has its original on the server ✓")
+            else:
+                st.markdown(f"**{len(miss)} posted image(s) have no original on the server.** Export them, "
+                            "copy into a folder under `published/instagram/` (rsync/Cyberduck), then Sync.")
+                hide = st.toggle("Hide reel covers", True, key="ig_miss_photos")
+                shown = [m for m in miss if not (hide and m["type"] == "VIDEO")]
                 cols = st.columns(6)
                 for i, m in enumerate(shown[:120]):
                     with cols[i % 6]:
                         if Path(m["thumb"]).exists():
                             st.image(m["thumb"], width="stretch")
                         st.caption(f"{m['date']} · {m['slide']}/{m['of']} · [open]({m['permalink']})")
-            else:
-                st.success("Every posted image has its original on the server ✓")
+        with t4:
+            if ia.MD.exists():
+                st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
+                                   file_name="instagram_posts.md", mime="text/markdown")
+                st.markdown(ia.MD.read_text(encoding="utf-8")[:15000])
 
 
 def _on_archive_done(result: dict):
@@ -617,8 +606,7 @@ def render_instagram_ui():
     if not project or not Path(project).exists():
         if st.session_state.get("ig_archiving"):
             live_progress("ig_archive", "🗂 Syncing posts archive…", _on_archive_done)
-        _past_posts()
-        _archive_panel()
+        _posts_hub()
         _defaults_editor()
         picked = render_project_picker("instagram")
         if picked:

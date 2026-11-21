@@ -98,7 +98,7 @@ def _fetch_all() -> list[dict]:
     from src.instagram_publisher import GRAPH_BASE, _creds, _get
     c = _creds()
     fields = ("id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,"
-              "children{media_type,media_url,thumbnail_url}")
+              "like_count,comments_count,children{media_type,media_url,thumbnail_url}")
     out, url, params = [], f"{GRAPH_BASE}/{c['ig_user_id']}/media", {"fields": fields, "limit": 50}
     while url:
         data = _get(url, {**params, "access_token": c["access_token"]})
@@ -157,7 +157,9 @@ def sync() -> dict:
                 atomic_write_json(ARCHIVE, arch)       # resumable if interrupted
         for m in media:                                # captions may have been edited
             if m["id"] in posts:
-                posts[m["id"]]["caption"] = m.get("caption") or ""
+                posts[m["id"]].update(caption=m.get("caption") or "", likes=m.get("like_count"),
+                                      comments=m.get("comments_count"))
+        arch["synced"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         progress.update(NS, 1, "done", f"{len(new)} new")
 
         progress.update(NS, 2, "active", "Hashing photos on the server…")
