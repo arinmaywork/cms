@@ -359,33 +359,73 @@ def delete_leftovers() -> int:
 
 
 def write_md(arch: dict | None = None) -> Path:
+    from collections import Counter
     arch = arch or load_json(ARCHIVE, {})
     posts = sorted(arch.get("posts", {}).values(), key=lambda p: p["date"], reverse=True)
     kind = {"CAROUSEL_ALBUM": "Carousel", "IMAGE": "Image", "VIDEO": "Reel"}
-    lines = [f"# Instagram posts — archive", "",
-             f"_Synced {datetime.now():%Y-%m-%d %H:%M} · {len(posts)} posts · newest first. "
-             "File names are matched by image fingerprint against photos on the server; "
-             "`—` = original not on the server._", ""]
-    miss = missing(arch)
-    if miss:
-        lines += [f"## ⚠️ Originals not on the server ({len(miss)})", "",
-                  "Export these and copy them into a folder under `published/instagram/`, "
-                  "then sync again. Thumbnails: CMS → Instagram → 🗂 Posts archive.", ""]
-        lines += [f"- {x['date']} · slide {x['slide']} of {x['of']} · [open]({x['permalink']})" for x in miss]
-        lines += [""]
-    for p in posts:
-        text, tags = split_caption(p["caption"])
-        n = len(p["slides"])
-        lines += [f"## {p['date'][:10]} · {kind.get(p['type'], p['type'].title())}"
-                  + (f" ({n})" if n > 1 else "") + f" · [open]({p['permalink']})", ""]
-        names = [s.get("file") or "—" for s in p["slides"]]
-        lines += [f"**Files:** {', '.join(names)}", ""]
-        if text:
-            lines += ["**Caption:**", "", *[f"> {ln}" if ln else ">" for ln in text.splitlines()], ""]
+    L = ["# Instagram posts — archive", "",
+         f"_Synced {datetime.now():%Y-%m-%d %H:%M} · newest first · thumbnails in `ig_thumbs/`_", ""]
+    if posts:
+        months = Counter(p["date"][:7] for p in posts)
+        tags = Counter(t.lower() for p in posts for t in split_caption(p["caption"])[1])
+        likes = [p for p in posts if isinstance(p.get("likes"), int)]
+        types = Counter(kind.get(p["type"], p["type"]) for p in posts)
+        L += ["## Summary", "",
+              f"- **{len(posts)} posts** from {posts[-1]['date'][:10]} to {posts[0]['date'][:10]} — "
+              + ", ".join(f"{n} {k.lower()}s" for k, n in types.most_common()),
+              f"- **Images posted:** {sum(len(p['slides']) for p in posts)} · originals on server: "
+              f"{sum(1 for p in posts for s in p['slides'] if s.get('file'))}"]
+        if likes:
+            L.append(f"- **Avg likes:** {sum(p['likes'] for p in likes) / len(likes):.0f} · "
+                     f"**avg comments:** {sum(p.get('comments') or 0 for p in likes) / len(likes):.1f}")
+        L += ["", "### Posts per month (last 12)", "", "| Month | Posts |", "|---|---|"]
+        L += [f"| {m} | {'▇' * n} {n} |" for m, n in sorted(months.items(), reverse=True)[:12]]
+        if likes:
+            L += ["", "### Top 10 by likes", ""]
+            for p in sorted(likes, key=lambda p: -p["likes"])[:10]:
+                L.append(f'<img src="ig_thumbs/{p["id"]}_0.jpg" width="60"> '
+                         f'{p["date"][:10]} · ❤️ {p["likes"]} · 💬 {p.get("comments") or 0} · [open]({p["permalink"]})  ')
         if tags:
-            lines += [f"**Hashtags ({len(tags)}):** {' '.join(tags)}", ""]
-    atomic_write_text(MD, "\n".join(lines) + "\n")
+            L += ["", "### Most used hashtags", "", " · ".join(f"{t} ({n})" for t, n in tags.most_common(20))]
+        L += ["", "---", ""]
+    for p in posts:
+        text, ptags = split_caption(p["caption"])
+        n = len(p["slides"])
+        stats = f" · ❤️ {p['likes']} · 💬 {p.get('comments') or 0}" if isinstance(p.get("likes"), int) else ""
+        L += [f"## {p['date'][:10]} · {kind.get(p['type'], p['type'].title())}" + (f" ({n})" if n > 1 else "")
+              + f"{stats} · [open]({p['permalink']})", ""]
+        L += [" ".join(f'<img src="ig_thumbs/{p["id"]}_{i}.jpg" width="110">' for i in range(n)), ""]
+        L += [f"**Files:** {', '.join(s.get('file') or '—' for s in p['slides'])}", ""]
+        if text:
+            L += ["**Caption:**", "", *[f"> {ln}" if ln else ">" for ln in text.splitlines()], ""]
+        if ptags:
+            L += [f"**Hashtags ({len(ptags)}):** {' '.join(ptags)}", ""]
+    atomic_write_text(MD, "\n".join(L) + "\n")
     return MD
+
+
+def export_zip() -> bytes:
+    """instagram_posts.md + ig_thumbs/ — opens with previews in VS Code / Obsidian / GitHub."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(MD, "instagram_posts/instagram_posts.md")
+        for t in THUMBS.glob("*.jpg"):
+            z.write(t, f"instagram_posts/ig_thumbs/{t.name}")
+    return buf.getvalue()
+
+
+def preview_html(md_text: str, limit_posts: int = 25) -> str:
+    """Markdown with thumbnails inlined as data URIs (for in-app preview)."""
+    import base64
+    cut = [m.start() for m in re.finditer(r"^## \d{4}-", md_text, re.M)]
+    if len(cut) > limit_posts:
+        md_text = md_text[:cut[limit_posts]] + f"\n_…{len(cut) - limit_posts} more posts in the download_\n"
+    def inline(m):
+        f = THUMBS / m.group(1)
+        return (f'src="data:image/jpeg;base64,{base64.b64encode(f.read_bytes()).decode()}"'
+                if f.exists() else 'src=""')
+    return re.sub(r'src="ig_thumbs/([^"]+)"', inline, md_text)
 
 
 def missing(arch: dict | None = None) -> list[dict]:

@@ -443,9 +443,16 @@ def _posts_hub():
                                     st.rerun()
         with t4:
             if ia.MD.exists():
-                st.download_button("⬇️ Download instagram_posts.md", ia.MD.read_bytes(),
-                                   file_name="instagram_posts.md", mime="text/markdown")
-                st.markdown(ia.MD.read_text(encoding="utf-8")[:15000])
+                if st.button("♻️ Rebuild summary", key="ig_md_rebuild"):
+                    ia.write_md()
+                    st.rerun()
+                d1, d2 = st.columns(2)
+                d1.download_button("⬇️ Download .zip (md + thumbnails — opens with previews)",
+                                   _md_zip(ia.MD.stat().st_mtime), file_name="instagram_posts.zip",
+                                   mime="application/zip", width="stretch")
+                d2.download_button("⬇️ Download .md only", ia.MD.read_bytes(),
+                                   file_name="instagram_posts.md", mime="text/markdown", width="stretch")
+                st.markdown(ia.preview_html(ia.MD.read_text(encoding="utf-8")), unsafe_allow_html=True)
 
 
 @st.cache_data(max_entries=5000, show_spinner=False)
@@ -458,6 +465,12 @@ def _capture_date(path: str, mtime: float) -> str:
         return str(raw)[:10].replace(":", "-") if raw else ""
     except Exception:
         return ""
+
+
+@st.cache_data(max_entries=2, show_spinner="Packing…")
+def _md_zip(mtime: float) -> bytes:
+    from src import ig_archive as ia
+    return ia.export_zip()
 
 
 def _upload_originals(ia, shown: list):
