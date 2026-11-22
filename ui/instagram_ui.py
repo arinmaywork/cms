@@ -285,15 +285,23 @@ def _schedule_editor(it: dict):
         if it.get("type") == "reel":
             from ui.music_ui import music_picker
             music_picker(es, f"igsch_m_{iid}")
+        import datetime as _dt
+        cur = igs.parse(it["when"]).astimezone(igs.tz())
+        t1, t2 = st.columns(2)
+        nd = t1.date_input("Date", cur.date(), key=f"igsch_ed_{iid}")
+        nt = t2.time_input("Time", cur.time().replace(second=0, microsecond=0), key=f"igsch_et_{iid}", step=300)
+        new_when = _dt.datetime.combine(nd, nt).replace(tzinfo=igs.tz())
         new = {"caption": cap.strip(), "alts": alts}
         if it.get("type") == "reel":
             new["music"] = es.get("music")
         old = {"caption": it["caption"].strip(), "alts": list(it.get("alts") or []), "music": it.get("music")}
-        dirty = any(new[k] != old[k] for k in new)
+        dirty = any(new[k] != old[k] for k in new) or new_when != cur.replace(second=0, microsecond=0)
         b1, b2 = st.columns([1, 2])
         if b1.button("💾 Save changes", key=f"igsch_save_{iid}", type="primary", width="stretch",
                      disabled=not dirty or not cap.strip() or len(cap) > 2200):
-            igs.update(iid, **new, edited=igs._utc(__import__("datetime").datetime.now(igs.tz())))
+            igs.update(iid, **new, edited=igs._utc(_dt.datetime.now(igs.tz())))
+            if new_when != cur.replace(second=0, microsecond=0):
+                igs.set_when(iid, new_when)
             st.rerun()
         if dirty:
             b2.warning("Unsaved changes — click 💾 Save", icon="⚠️")
@@ -738,6 +746,14 @@ def _reel_editor(project: Path, vids: list[Path], images: list[Path]):
     if h2.button("← Projects", key="igr_back", width="stretch"):
         _close()
         st.rerun()
+    gen = project / "reel_from_photos.mp4"
+    if gen.exists() and images:
+        g1, g2 = st.columns([5, 1])
+        g1.caption("This reel was made from the photos in this folder.")
+        if g2.button("↩ Back to photos", key="igr_unmake", width="stretch",
+                     help="Deletes the generated video so you can re-make it or post the photos"):
+            gen.unlink()
+            st.rerun()
 
     left, right = st.columns([2, 3], gap="large")
     with left:
@@ -911,6 +927,10 @@ def render_instagram_ui():
         st.error("No images in this folder.")
         return
     images = _slides_ui(project, images, d)      # user order + include/exclude
+    with st.expander("🎬 Turn these photos into a reel (to add Instagram music)"):
+        from ui.reelmaker_ui import reel_maker
+        reel_maker(list(images), d, project / "reel_from_photos.mp4", "igrm")
+        _save()
 
     cfg = _frame_ui(project, images, d)
     notes = st.text_input("🗒️ AI context", key="ig_notes", placeholder="e.g. minimal architecture")

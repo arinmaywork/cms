@@ -57,7 +57,7 @@ def render_week_planner():
     open_days = [d for d in days if not w["days"][d].get("status")]
 
     # ── Pool of unassigned files ──────────────────────────────────────────────
-    assigned = {n for d in days for n in w["days"][d]["items"]}
+    assigned = {n for d in days for n in w["days"][d]["items"] + w["days"][d].get("reel_src", [])}
     pool = [f for f in media_files(batch, "week") if f.name not in assigned]
     st.markdown(f"#### 🧺 Unassigned ({len(pool)})")
     if pool:
@@ -126,6 +126,21 @@ def render_week_planner():
                             items.pop(i); wk.save_plan(batch, w); st.rerun()
                         if b3.button("▶", key=k(f"r_{d}_{i}"), disabled=i == len(items) - 1):
                             items.insert(i + 1, items.pop(i)); wk.save_plan(batch, w); st.rerun()
+                if day.get("reel_src") and st.button("↩ Back to photos", key=k(f"unreel_{d}"),
+                                                     help="Delete the generated reel"):
+                    (batch / items[0]).unlink(missing_ok=True)
+                    day["items"] = day.pop("reel_src"); wk.save_plan(batch, w); st.rerun()
+                if Path(items[0]).suffix.lower() not in VIDEO and items:
+                    with st.expander("🎬 Turn into a reel (to add Instagram music)"):
+                        from ui.reelmaker_ui import reel_maker
+                        vid = f"reel_{d.replace('#', '_')}.mp4"
+
+                        def _after(d=d, vid=vid):
+                            w2 = wk.plan(batch)
+                            w2["days"][d]["reel_src"] = list(w2["days"][d]["items"])
+                            w2["days"][d]["items"] = [vid]
+                            wk.save_plan(batch, w2)
+                        reel_maker([batch / n for n in items], day, batch / vid, k(f"rm_{d}"), after=_after)
                 if Path(items[0]).suffix.lower() in VIDEO:
                     day["cover_second"] = st.number_input("Reel cover frame (seconds)", 0.0, 900.0,
                                                           float(day.get("cover_second", 1.0)), 0.5,
