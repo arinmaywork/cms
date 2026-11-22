@@ -266,6 +266,62 @@ def _slides_ui(project: Path, all_imgs: list[Path], d: dict) -> list[Path]:
 
 
 @st.fragment(run_every=30)
+def _schedule_editor(it: dict):
+    """Inline editor for one scheduled post: preview on the left, fields on the right."""
+    iid = it["id"]
+    st.markdown(f"#### ✏️ Editing · {it['name']} · {igs.local_str(it['when'])}")
+    left, right = st.columns([2, 3], gap="large")
+    es = st.session_state.setdefault(f"igsch_mu_{iid}", {"music": it.get("music")})
+    with right:
+        cap = st.text_area("Caption (incl. signature & hashtags)", it["caption"], height=260,
+                           key=f"igsch_cap_{iid}")
+        n_tags = len(set(re.findall(r"#\w+", cap.lower())))
+        st.caption(f"{len(cap):,}/2,200 · {n_tags} hashtags")
+        alts = list(it.get("alts") or [])
+        if it.get("type") != "reel" and alts:
+            with st.expander("Alt text per slide"):
+                alts = [st.text_input(f"Slide {n + 1}", a, max_chars=1000,
+                                      key=f"igsch_alt_{iid}_{n}") for n, a in enumerate(alts)]
+        if it.get("type") == "reel":
+            from ui.music_ui import music_picker
+            music_picker(es, f"igsch_m_{iid}")
+        new = {"caption": cap.strip(), "alts": alts}
+        if it.get("type") == "reel":
+            new["music"] = es.get("music")
+        old = {"caption": it["caption"].strip(), "alts": list(it.get("alts") or []), "music": it.get("music")}
+        dirty = any(new[k] != old[k] for k in new)
+        b1, b2 = st.columns([1, 2])
+        if b1.button("💾 Save changes", key=f"igsch_save_{iid}", type="primary", width="stretch",
+                     disabled=not dirty or not cap.strip() or len(cap) > 2200):
+            igs.update(iid, **new, edited=igs._utc(__import__("datetime").datetime.now(igs.tz())))
+            st.rerun()
+        if dirty:
+            b2.warning("Unsaved changes — click 💾 Save", icon="⚠️")
+        else:
+            b2.success("Saved" + (f" · last edit {igs.local_str(it['edited'])}" if it.get("edited") else
+                                  " · nothing changed"), icon="✅")
+    with left:
+        st.markdown("**Preview**")
+        with st.container(border=True):
+            if it.get("type") == "reel":
+                if it.get("cover_url"):
+                    st.image(it["cover_url"], width=240, caption="Cover")
+                if st.toggle("▶ Play video", key=f"igsch_pv_{iid}") and it.get("video_url"):
+                    st.video(it["video_url"])
+                if es.get("music"):
+                    from src.ig_music import label
+                    st.markdown(label(es["music"]))
+            elif it.get("urls"):
+                n = len(it["urls"])
+                k = st.slider("Slide", 1, n, 1, key=f"igsch_sl_{iid}") if n > 1 else 1
+                st.image(it["urls"][k - 1], width="stretch")
+            first, _, rest = cap.strip().partition("\n")
+            st.markdown(f"**capture.adatta** {first}")
+            if rest.strip():
+                with st.expander("…more"):
+                    st.text(rest.strip())
+
+
 def _schedule_panel():
     import pandas as pd
     data = igs.read()
@@ -287,7 +343,7 @@ def _schedule_panel():
         ev = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
                           selection_mode="multi-row", key="igsch_tbl")
         sel = [rows[r] for r in (ev.selection.rows if ev else [])]
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         t = c1.time_input("Default time", value=__import__("datetime").time(
             *map(int, data["settings"]["time"].split(":"))), key="igsch_def", step=900)
         if t.strftime("%H:%M") != data["settings"]["time"]:
@@ -311,30 +367,7 @@ def _schedule_panel():
                     igs.set_when(sel[0]["id"], _dt.datetime.combine(nd, nt).replace(tzinfo=igs.tz()))
                     st.rerun()
         if len(sel) == 1 and sel[0]["status"] in ("scheduled", "failed"):
-            with c5.popover("✏️ Edit"):
-                it = sel[0]
-                cap = st.text_area("Caption (incl. signature & hashtags)", it["caption"], height=220,
-                                   key=f"igsch_cap_{it['id']}")
-                n_tags = len(set(re.findall(r"#\w+", cap.lower())))
-                st.caption(f"{len(cap):,}/2,200 · {n_tags} hashtags")
-                alts = list(it.get("alts") or [])
-                if it.get("type") != "reel" and alts:
-                    with st.expander("Alt text per slide"):
-                        alts = [st.text_input(f"Slide {n + 1}", a, max_chars=1000,
-                                              key=f"igsch_alt_{it['id']}_{n}") for n, a in enumerate(alts)]
-                es = st.session_state.setdefault(f"igsch_mu_{it['id']}", {"music": it.get("music")})
-                if it.get("type") == "reel":
-                    from ui.music_ui import music_picker
-                    music_picker(es, f"igsch_m_{it['id']}")
-                if st.button("💾 Save changes", key=f"igsch_save_{it['id']}", type="primary",
-                             disabled=not cap.strip() or len(cap) > 2200):
-                    kw = {"caption": cap.strip(), "alts": alts}
-                    if it.get("type") == "reel":
-                        kw["music"] = es.get("music")
-                    igs.update(it["id"], **kw)
-                    st.session_state.pop(f"igsch_mu_{it['id']}", None)
-                    st.toast("Saved — will post with the new version.")
-                    st.rerun()
+            _schedule_editor(sel[0])
         st.caption("Select a row to edit, move, post now or remove. Published posts: edit in the "
                    "Instagram app (the API can't change them). Failed posts retry 3× (10 min apart).")
 
