@@ -4,7 +4,11 @@ Meta's Audio API only works through **Facebook Login**, so music needs a second 
 Normal posting keeps using your existing Instagram token.
 
 ## 1. Link Instagram to a Facebook Page
-Instagram app → Profile → **Edit profile → Page** → connect (or create) a Facebook Page.
+The Instagram website doesn't offer this. Use one of these:
+- **Facebook (desktop, easiest):** switch into your Page → **Settings → Linked accounts → Instagram → Connect account**.
+  If you have no Page yet: facebook.com/pages/create.
+- **Instagram phone app:** Profile → **Edit profile** → under *Public business information* → **Page → Connect or create**.
+
 The Instagram account must be Business or Creator.
 
 ## 2. Add Facebook Login to your Meta app
