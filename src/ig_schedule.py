@@ -153,6 +153,15 @@ def set_when(item_id: str, when: datetime) -> None:
     _mutate(f)
 
 
+def update(item_id: str, **fields) -> None:
+    """Edit a not-yet-posted item (caption, alts, music)."""
+    def f(d):
+        for i in d["items"]:
+            if i["id"] == item_id and i["status"] in ("scheduled", "failed"):
+                i.update(fields)
+    _mutate(f)
+
+
 def set_default_time(hhmm: str) -> None:
     _mutate(lambda d: d["settings"].__setitem__("time", hhmm))
 

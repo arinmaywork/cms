@@ -287,7 +287,7 @@ def _schedule_panel():
         ev = st.dataframe(df, hide_index=True, width="stretch", on_select="rerun",
                           selection_mode="multi-row", key="igsch_tbl")
         sel = [rows[r] for r in (ev.selection.rows if ev else [])]
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         t = c1.time_input("Default time", value=__import__("datetime").time(
             *map(int, data["settings"]["time"].split(":"))), key="igsch_def", step=900)
         if t.strftime("%H:%M") != data["settings"]["time"]:
@@ -310,7 +310,33 @@ def _schedule_panel():
                 if st.button("Save", key="igsch_ms"):
                     igs.set_when(sel[0]["id"], _dt.datetime.combine(nd, nt).replace(tzinfo=igs.tz()))
                     st.rerun()
-        st.caption("Select rows to post now, move, or remove. Failed posts retry 3× (10 min apart).")
+        if len(sel) == 1 and sel[0]["status"] in ("scheduled", "failed"):
+            with c5.popover("✏️ Edit"):
+                it = sel[0]
+                cap = st.text_area("Caption (incl. signature & hashtags)", it["caption"], height=220,
+                                   key=f"igsch_cap_{it['id']}")
+                n_tags = len(set(re.findall(r"#\w+", cap.lower())))
+                st.caption(f"{len(cap):,}/2,200 · {n_tags} hashtags")
+                alts = list(it.get("alts") or [])
+                if it.get("type") != "reel" and alts:
+                    with st.expander("Alt text per slide"):
+                        alts = [st.text_input(f"Slide {n + 1}", a, max_chars=1000,
+                                              key=f"igsch_alt_{it['id']}_{n}") for n, a in enumerate(alts)]
+                es = st.session_state.setdefault(f"igsch_mu_{it['id']}", {"music": it.get("music")})
+                if it.get("type") == "reel":
+                    from ui.music_ui import music_picker
+                    music_picker(es, f"igsch_m_{it['id']}")
+                if st.button("💾 Save changes", key=f"igsch_save_{it['id']}", type="primary",
+                             disabled=not cap.strip() or len(cap) > 2200):
+                    kw = {"caption": cap.strip(), "alts": alts}
+                    if it.get("type") == "reel":
+                        kw["music"] = es.get("music")
+                    igs.update(it["id"], **kw)
+                    st.session_state.pop(f"igsch_mu_{it['id']}", None)
+                    st.toast("Saved — will post with the new version.")
+                    st.rerun()
+        st.caption("Select a row to edit, move, post now or remove. Published posts: edit in the "
+                   "Instagram app (the API can't change them). Failed posts retry 3× (10 min apart).")
 
 
 def _posts_hub():
