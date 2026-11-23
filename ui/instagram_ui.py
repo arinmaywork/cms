@@ -284,7 +284,8 @@ def _schedule_editor(it: dict):
                                       key=f"igsch_alt_{iid}_{n}") for n, a in enumerate(alts)]
         if it.get("type") == "reel":
             from ui.music_ui import music_picker
-            music_picker(es, f"igsch_m_{iid}")
+            music_picker(es, f"igsch_m_{iid}", sources=[it["cover_url"]] if it.get("cover_url") else None,
+                         caption=it["caption"])
         import datetime as _dt
         cur = igs.parse(it["when"]).astimezone(igs.tz())
         t1, t2 = st.columns(2)
@@ -792,7 +793,11 @@ def _reel_editor(project: Path, vids: list[Path], images: list[Path]):
         r["share_to_feed"] = st.toggle("Also show on the profile grid & feed", r["share_to_feed"],
                                        key="igr_feed")
         from ui.music_ui import music_picker
-        music_picker(r, "igr")
+        from ui.music_ui import video_frames
+        src_imgs = list(images) if (project / "reel_from_photos.mp4").exists() and images \
+            else video_frames(video, info["duration"])
+        music_picker(r, "igr", sources=src_imgs, caption=d.get("title", ""),
+                     seconds=info["duration"] or 15.0)
 
     with right:
         d["title"] = st.text_area("Caption", key=_seed("igw_title", d["title"]), height=170,

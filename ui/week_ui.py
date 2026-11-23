@@ -146,7 +146,13 @@ def render_week_planner():
                                                           float(day.get("cover_second", 1.0)), 0.5,
                                                           key=k(f"cv_{d}"))
                     from ui.music_ui import music_picker
-                    music_picker(day, k(f"mu_{d}"), on_change=lambda: wk.save_plan(batch, w))
+                    from ui.music_ui import video_frames
+                    from src.ig_reel import probe
+                    vdur = probe(batch / items[0])["duration"] if (batch / items[0]).exists() else 15.0
+                    srcs = [batch / n for n in day.get("reel_src", []) if (batch / n).exists()] \
+                        or video_frames(batch / items[0], vdur)
+                    music_picker(day, k(f"mu_{d}"), on_change=lambda: wk.save_plan(batch, w),
+                                 sources=srcs, caption=wk.caption_of(day), seconds=vdur or 15.0)
                 elif ia.ARCHIVE.exists():
                     for name, info in _dups(tuple(str(batch / n) for n in items),
                                             ia.ARCHIVE.stat().st_mtime).items():
