@@ -380,6 +380,27 @@ def _schedule_panel():
                    "Instagram app (the API can't change them). Failed posts retry 3× (10 min apart).")
 
 
+def _insights_tab():
+    from src import ig_insights as ins
+    c1, c2 = st.columns([1, 2])
+    n = c1.number_input("Last N reels", 1, 50, 14, key="ins_n")
+    if c2.button("📤 Export reel insights (.md)", type="primary", width="stretch", key="ins_go"):
+        with st.spinner("Fetching insights (one call per metric)…"):
+            try:
+                f, k, note = ins.export(int(n))
+                st.session_state.ins_last = str(f)
+                st.success(f"{k} reels · {note}")
+            except Exception as e:
+                st.error(str(e))
+    files = sorted(ins.OUT_DIR.glob("insights-*.md"), reverse=True) if ins.OUT_DIR.exists() else []
+    if files:
+        f = files[0]
+        st.download_button(f"⬇️ {f.name}", f.read_bytes(), f.name, "text/markdown", key="ins_dl")
+        with st.expander("Preview"):
+            st.markdown(f.read_text(encoding="utf-8"))
+    st.caption("Upload the file to your reels chat each week. Saved in history/insights/.")
+
+
 def _posts_hub():
     """One panel for everything about past posts — reads the local archive (instant)."""
     import pandas as pd
@@ -401,7 +422,10 @@ def _posts_hub():
         if not posts:
             st.info("No archive yet — click Sync.")
             return
-        t1, t2, t3, t4 = st.tabs(["📈 Consistency", "🖼 Recent posts", "⚠️ Missing originals", "🗂 Archive file"])
+        t1, t2, t3, t4, t5 = st.tabs(["📈 Consistency", "🖼 Recent posts", "⚠️ Missing originals",
+                                      "🗂 Archive file", "🎬 Reel insights"])
+        with t5:
+            _insights_tab()
         with t1:
             ts = sorted(datetime.fromisoformat(p["date"].replace("+0000", "+00:00")) for p in posts)
             now = datetime.now(timezone.utc)
